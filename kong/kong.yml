@@ -1,0 +1,29 @@
+_format_version: "3.0"
+
+services:
+  - name: order-service
+    url: http://order-service:3000
+    routes:
+      - name: order-route
+        paths:
+          - /api/v1/orders
+        strip_path: true
+
+plugins:
+  - name: rate-limiting
+    config:
+      minute: 10
+      policy: local
+      
+  - name: key-auth
+    config:
+      key_names:
+        - apikey
+
+consumers:
+  - username: userA
+    keyauth_credentials:
+      - key: key-user-A
+  - username: userB
+    keyauth_credentials:
+      - key: key-user-B

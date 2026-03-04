@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  kong:
+    image: kong:3.4
+    volumes:
+      - ./kong/kong.yml:/usr/local/kong/declarative/kong.yml
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /usr/local/kong/declarative/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    networks:
+      - api-net
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:22.0
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8080:8080"
+    networks:
+      - api-net
+
+  order-service:
+    build: ./services/order-service
+    environment:
+      PORT: 3000
+    networks:
+      - api-net
+
+networks:
+  api-net:
