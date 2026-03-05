@@ -81,13 +81,13 @@ CREATE TABLE sessions (
 --  TABLE: products
 -- ─────────────────────────────────────────────────────────────
 CREATE TABLE products (
-    sku         VARCHAR(20)    PRIMARY KEY,
+    sku         VARCHAR(20)    PRIMARY KEY,                         --SKU là viết tắt của Stock Keeping Unit (Đơn vị lưu kho).
     name        VARCHAR(150)   NOT NULL,
     brand_id    INTEGER        NOT NULL REFERENCES brands(id),
     category_id INTEGER        NOT NULL REFERENCES categories(id),
     price       NUMERIC(10,2)  NOT NULL,
-    specs       TEXT,
-    stock       INTEGER        DEFAULT 50,
+    specs       TEXT,                                               --Specifications (Thông số kỹ thuật).
+    stock       INTEGER        DEFAULT 50,                          --Stock (Số lượng tồn kho).
     created_at  TIMESTAMP      DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -99,7 +99,7 @@ CREATE TABLE orders (
     user_id     INTEGER        NOT NULL REFERENCES users(id),
     sku         VARCHAR(20)    NOT NULL REFERENCES products(sku),
     item_name   VARCHAR(150)   NOT NULL,
-    qty         INTEGER        NOT NULL DEFAULT 1 CHECK (qty > 0),
+    qty         INTEGER        NOT NULL DEFAULT 1 CHECK (qty > 0),    --Quantity (Số lượng đặt mua).
     unit_price  NUMERIC(10,2)  NOT NULL,
     total_price NUMERIC(10,2)  GENERATED ALWAYS AS (qty * unit_price) STORED,
     status      order_status   DEFAULT 'Pending',
@@ -155,11 +155,12 @@ SELECT setval(pg_get_serial_sequence('categories','id'), 7);
 -- ─────────────────────────────────────────────────────────────
 --  users  (20 khách hàng — id: 1..20)
 --  password_hash bên dưới là bcrypt của "Pass@{id}2024"
---    VD: user id=1  → plain: Pass@12024  → hash: $2b$12$...
+--  VD: user id=1  → plain: Pass@12024  → hash: $2b$12$...
 --  Trong production, hash phải được tạo từ application (Node/Python/...)
 --  KHÔNG dùng plain-text password trong môi trường thực tế
+--  Khi deploy thực tế, phải tạo hash từ application bằng bcrypt rồi mới INSERT vào database.
 -- ─────────────────────────────────────────────────────────────
-INSERT INTO users (id, username, password_hash, full_name, email, phone, city, role) VALUES
+INSERT INTO users (id, username, password_hash, full_name, email, phone, city, role) VALUES 
 ( 1, 'nguyen.van.an',   '$2b$12$KIx5ZFbLxjRJuQz3Oa1uqeYhN4vW8mD7pT2sA6cE0fG9bH3iJ1kL', 'Nguyễn Văn An',    'an.nguyen@email.com',    '0901234567', 'Hà Nội',                  'customer'),
 ( 2, 'tran.thi.bich',   '$2b$12$LJy6AGcMyKSkvR4OPb2urfZiO5wX9nE8qU3tB7dF1gH0cI4jK2mM', 'Trần Thị Bích',    'bich.tran@email.com',    '0912345678', 'Thành phố Hồ Chí Minh',  'customer'),
 ( 3, 'le.minh.cuong',   '$2b$12$MKz7BHdNzLTlwS5PQc3vsgAjP6xY0oF9rV4uC8eG2hI1dJ5kL3nN', 'Lê Minh Cường',    'cuong.le@email.com',     '0923456789', 'Đà Nẵng',                 'customer'),
