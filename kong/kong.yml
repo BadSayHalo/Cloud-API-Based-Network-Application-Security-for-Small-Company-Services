@@ -1,10 +1,10 @@
 _format_version: "3.0"
 
 services:
-  - name: order-service
+  - name: order-service-backend
     url: http://order-service:3000
     routes:
-      - name: order-route
+      - name: fetch-orders
         paths:
           - /api/v1/orders
         strip_path: true
@@ -21,9 +21,10 @@ plugins:
         - apikey
 
 consumers:
-  - username: userA
+  - username: "1"
     keyauth_credentials:
-      - key: key-user-A
-  - username: userB
+      - key: key-user-1
+
+  - username: "2"
     keyauth_credentials:
-      - key: key-user-B
+      - key: key-user-2
