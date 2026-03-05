@@ -1,4 +1,7 @@
 # Cloud-API-Based-Network-Application-Security-for-Small-Company-Services
+
+
+
 project-root/
   ├─ infra/              # Container orchestration details
   │  ├─ docker-compose.yml 
