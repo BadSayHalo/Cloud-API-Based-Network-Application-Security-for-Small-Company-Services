@@ -2,19 +2,18 @@ _format_version: "3.0"
 
 services:
   - name: order-service-backend
-    url: http://order-service:3000
+    url: http://172.17.0.1:3000
     routes:
       - name: fetch-orders
         paths:
           - /api/v1/orders
-        strip_path: true
+        strip_path: false
 
 plugins:
   - name: rate-limiting
     config:
       minute: 10
       policy: local
-      
   - name: key-auth
     config:
       key_names:
@@ -24,7 +23,6 @@ consumers:
   - username: "1"
     keyauth_credentials:
       - key: key-user-1
-
   - username: "2"
     keyauth_credentials:
       - key: key-user-2
