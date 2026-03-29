@@ -1,12 +1,13 @@
-version: '3.8'
-
 services:
+  # 1. API GATEWAY (KONG CHẾ ĐỘ DB-LESS - NHẸ VÀ NHANH)
   kong:
-    image: kong:3.4
+    image: kong:3.4-ubuntu
+    container_name: kong-api
     volumes:
-      - ./kong/kong.yml:/usr/local/kong/declarative/kong.yml
+      # Ánh xạ file kong.yml từ thư mục gateway vào trong Kong
+      - ../gateway/kong.yml:/usr/local/kong/declarative/kong.yml
     environment:
-      KONG_DATABASE: "off"
+      KONG_DATABASE: "off" # Tắt database của Kong
       KONG_DECLARATIVE_CONFIG: /usr/local/kong/declarative/kong.yml
       KONG_PROXY_ACCESS_LOG: /dev/stdout
       KONG_ADMIN_ACCESS_LOG: /dev/stdout
@@ -16,10 +17,51 @@ services:
       - "8000:8000"
       - "8001:8001"
     networks:
-      - api-net
+      - capstone-net
 
+  # 2. CƠ SỞ DỮ LIỆU CỦA ỨNG DỤNG (LAPTOP STORE)
+  app-database:
+    image: postgres:17
+    container_name: app-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_db_password
+      POSTGRES_DB: laptop_store
+    ports:
+      - "5432:5432"
+    volumes:
+      # Nạp thẳng file schema.sql từ thư mục infra vào để tự tạo bảng
+      - ./schema.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - capstone-net
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 3. BACKEND SERVICE (ORDER SERVICE NODE.JS)
+  order-service:
+    build: ../services/order-service
+    container_name: backend-order-api
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      DB_USER: postgres
+      DB_PASSWORD: postgres_db_password
+      DB_HOST: 172.17.0.1  # Trỏ đúng tên container DB ở trên
+      DB_NAME: laptop_store
+    depends_on:
+      app-database:
+        condition: service_healthy # Đợi DB khởi tạo xong bảng mới chạy Node.js
+    networks:
+      - capstone-net
+
+  # 4. IDENTITY PROVIDER (KEYCLOAK)
   keycloak:
     image: quay.io/keycloak/keycloak:22.0
+    container_name: keycloak-idp
     command: start-dev
     environment:
       KEYCLOAK_ADMIN: admin
@@ -27,14 +69,8 @@ services:
     ports:
       - "8080:8080"
     networks:
-      - api-net
-
-  order-service:
-    build: ./services/order-service
-    environment:
-      PORT: 3000
-    networks:
-      - api-net
+      - capstone-net
 
 networks:
-  api-net:
+  capstone-net:
+    driver: bridge
