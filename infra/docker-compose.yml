@@ -19,6 +19,16 @@ services:
     networks:
       - capstone-net
 
+
+  frontend-web:
+    build: ../frontend
+    container_name: frontend-web
+    ports:
+      - "4000:80"
+    networks:
+      - capstone-net
+
+
   # 2. CƠ SỞ DỮ LIỆU CỦA ỨNG DỤNG (LAPTOP STORE)
   app-database:
     image: postgres:17
