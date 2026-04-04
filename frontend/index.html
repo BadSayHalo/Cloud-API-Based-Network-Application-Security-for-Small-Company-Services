@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>E-Commerce Security Demo</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; display: flex; justify-content: center; align-items: flex-start; padding-top: 30px; height: 100vh; margin: 0; }
+        .container { width: 950px; display: flex; gap: 20px; }
+        .card { background: white; padding: 25px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); width: 100%; margin-bottom: 20px;}
+        h2 { text-align: center; color: #333; font-size: 16px; border-bottom: 2px solid; padding-bottom: 8px; margin-top: 0; }
+        .step-1 { border-color: #007bff; } .step-2 { border-color: #ff9800; } .step-3 { border-color: #28a745; } .sec-dash { border-color: #dc3545; color: #dc3545;}
+        input, button { width: 100%; padding: 10px; margin: 8px 0; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
+        button { color: white; border: none; font-weight: bold; cursor: pointer; transition: 0.3s; }
+        .btn-login { background-color: #007bff; } .btn-login:hover { background-color: #0056b3; }
+        .btn-logout { background-color: #dc3545; width: 48%; display: inline-block; } .btn-logout:hover { background-color: #c82333; }
+        .btn-view { background-color: #6c757d; width: 48%; display: inline-block; margin-left: 3%; } .btn-view:hover { background-color: #5a6268; }
+        .btn-post { background-color: #ff9800; } .btn-post:hover { background-color: #e68a00; }
+        .btn-get { background-color: #28a745; } .btn-get:hover { background-color: #218838; }
+        pre { background: #282c34; color: #61dafb; padding: 15px; border-radius: 5px; overflow-x: auto; font-size: 13px; height: 350px; margin: 0; white-space: pre-wrap; word-break: break-all;}
+        .col-left { flex: 1; display: flex; flex-direction: column; }
+        .col-right { flex: 1; display: flex; flex-direction: column; }
+        .badge { background: #eee; padding: 5px 10px; border-radius: 5px; font-weight: bold; font-size: 13px; display: inline-block; margin-bottom: 5px; width: 100%; box-sizing: border-box;}
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div class="col-left">
+            <div class="card">
+                <h2 class="step-1">🔑 BƯỚC 1: QUẢN LÝ PHIÊN (KEYCLOAK)</h2>
+                <input type="text" id="username" placeholder="Username" value="nguyen.van.an">
+                <input type="password" id="password" placeholder="Password" value="123456">
+                <button class="btn-login" onclick="login()">1. Đăng Nhập (Lấy JWT)</button>
+                <div>
+                    <button class="btn-logout" onclick="logout()">Đăng Xuất</button>
+                    <button class="btn-view" onclick="showJWT()">Xem chuỗi JWT</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2 class="step-2">➕ BƯỚC 2: TẠO ĐƠN HÀNG (MÃ HÓA AES)</h2>
+                <input type="text" id="laptopName" placeholder="Tên Laptop" value="MacBook Pro M3">
+                <input type="number" id="laptopPrice" placeholder="Giá tiền (VND)" value="40000000">
+                <input type="text" id="customerPhone" placeholder="Số điện thoại" value="0912345678">
+                <button class="btn-post" onclick="createOrder()">2. POST Data qua Kong Gateway</button>
+            </div>
+
+            <div class="card" style="margin-bottom: 0;">
+                <h2 class="step-3">🛒 BƯỚC 3: XEM ĐƠN HÀNG (ANTI-BOLA)</h2>
+                <button class="btn-get" onclick="fetchOrders()">3. GET Data qua Kong Gateway</button>
+            </div>
+        </div>
+
+        <div class="col-right">
+            <div class="card" style="background: #fff3f3; border: 1px solid #ffcccc; padding-bottom: 10px;">
+                <h2 class="sec-dash">🛡️ SECURITY DASHBOARD</h2>
+                <div class="badge">👤 User: <span id="dash-user" style="color: #007bff;">Chưa đăng nhập</span></div>
+                <div class="badge">🎟️ Session ID: <span id="dash-session" style="color: #28a745;">Trống</span></div>
+                <div class="badge">⏳ Token Hết Hạn: <span id="dash-exp" style="color: #dc3545;">Trống</span></div>
+            </div>
+
+            <div class="card" style="height: 100%; padding: 0; background: #282c34;">
+                <h2 style="color: white; border-bottom-color: #666; padding: 15px; margin: 0;">🖥️ KẾT QUẢ TỪ BACKEND NODE.JS</h2>
+                <pre id="result">Hệ thống sẵn sàng. Đang chờ thao tác...</pre>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Khai báo 2 biến để lưu thẻ
+        let accessToken = ""; 
+        let refreshToken = ""; 
+
+        // ==========================================
+        // 1. GỌI LÊN KEYCLOAK LẤY TOKEN
+        // ==========================================
+        async function login() {
+            const user = document.getElementById('username').value;
+            const pass = document.getElementById('password').value;
+            const resultBox = document.getElementById('result');
+
+            const keycloakUrl = "http://localhost:8080/realms/Capstone-Realm/protocol/openid-connect/token";
+            const params = new URLSearchParams();
+            params.append('client_id', 'kong-gateway'); 
+            params.append('grant_type', 'password');
+            params.append('username', user);
+            params.append('password', pass);
+
+            try {
+                resultBox.innerText = "⏳ Đang xin Keycloak cấp thẻ JWT...";
+                const response = await fetch(keycloakUrl, {
+                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params
+                });
+
+                const data = await response.json();
+                if (data.access_token) {
+                    accessToken = data.access_token;
+                    refreshToken = data.refresh_token; // Bắt lấy thẻ gia hạn để dùng lúc Đăng xuất
+                    
+                    const payload = JSON.parse(atob(accessToken.split('.')[1]));
+                    const expTime = new Date(payload.exp * 1000);
+
+                    document.getElementById('dash-user').innerText = payload.preferred_username;
+                    document.getElementById('dash-session').innerText = payload.sid;
+                    document.getElementById('dash-exp').innerText = expTime.toLocaleTimeString('vi-VN');
+
+                    resultBox.innerText = "🎉 ĐĂNG NHẬP THÀNH CÔNG!\n\nNhìn lên bảng Security Dashboard ở trên, Keycloak đã tự động tạo Session ID. Bạn có thể bấm nút 'Xem chuỗi JWT' để thấy mã gốc.";
+                } else {
+                    resultBox.innerText = "❌ ĐĂNG NHẬP THẤT BẠI!\n" + JSON.stringify(data, null, 2);
+                }
+            } catch (err) {
+                resultBox.innerText = "❌ Lỗi gọi Keycloak: " + err.message;
+            }
+        }
+
+        // ==========================================
+        // TÍNH NĂNG MỚI: XEM JWT & ĐĂNG XUẤT
+        // ==========================================
+        function showJWT() {
+            const resultBox = document.getElementById('result');
+            if (!accessToken) {
+                resultBox.innerText = "⚠️ LỖI: Bạn chưa có JWT. Hãy đăng nhập trước!";
+            } else {
+                resultBox.innerText = "🎫 CHUỖI JWT CỦA BẠN LÀ:\n\n" + accessToken + "\n\n👉 Bạn có thể copy chuỗi này dán vào trang web https://jwt.io để soi chi tiết bên trong.";
+            }
+        }
+
+        async function logout() {
+            const resultBox = document.getElementById('result');
+            if (!refreshToken) return resultBox.innerText = "⚠️ BẠN CHƯA ĐĂNG NHẬP!";
+
+            const logoutUrl = "http://localhost:8080/realms/Capstone-Realm/protocol/openid-connect/logout";
+            const params = new URLSearchParams();
+            params.append('client_id', 'kong-gateway');
+            params.append('refresh_token', refreshToken);
+
+            try {
+                resultBox.innerText = "⏳ Đang gửi yêu cầu hủy Session lên Keycloak...";
+                // Bắn API lên Keycloak để hủy phiên
+                await fetch(logoutUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: params
+                });
+
+                // Xóa token trên bộ nhớ Web
+                accessToken = "";
+                refreshToken = "";
+
+                // Reset giao diện
+                document.getElementById('dash-user').innerText = "Chưa đăng nhập";
+                document.getElementById('dash-session').innerText = "Trống";
+                document.getElementById('dash-exp').innerText = "Trống";
+                
+                resultBox.innerText = "✅ ĐÃ ĐĂNG XUẤT THÀNH CÔNG!\n\nSession ID đã bị hủy trên Keycloak và Token đã bị xóa khỏi Web.";
+            } catch (err) {
+                resultBox.innerText = "❌ Lỗi Đăng xuất: " + err.message;
+            }
+        }
+
+        // ==========================================
+        // 2 & 3. GỌI API KONG GATEWAY (Không đổi)
+        // ==========================================
+        async function createOrder() {
+            const resultBox = document.getElementById('result');
+            if (!accessToken) return resultBox.innerText = "⚠️ LỖI: Cần Đăng nhập lấy Token trước!";
+
+            const orderData = {
+                laptop_name: document.getElementById('laptopName').value,
+                price: document.getElementById('laptopPrice').value,
+                customer_phone: document.getElementById('customerPhone').value
+            };
+
+            try {
+                resultBox.innerText = "⏳ Đang gọi POST Kong Gateway (8000)...";
+                const response = await fetch("http://localhost:8000/api/v1/orders", {
+                    method: 'POST', headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body: JSON.stringify(orderData)
+                });
+                const data = await response.json();
+                resultBox.innerText = `HTTP Status: ${response.status}\n\n` + JSON.stringify(data, null, 2);
+            } catch (err) { resultBox.innerText = "❌ Lỗi: " + err.message; }
+        }
+
+        async function fetchOrders() {
+            const resultBox = document.getElementById('result');
+            if (!accessToken) return resultBox.innerText = "⚠️ LỖI: Cần Đăng nhập lấy Token trước!";
+
+            try {
+                resultBox.innerText = "⏳ Đang gọi GET Kong Gateway (8000)...";
+                const response = await fetch("http://localhost:8000/api/v1/orders", {
+                    method: 'GET', headers: { 'Authorization': 'Bearer ' + accessToken }
+                });
+                const data = await response.json();
+                resultBox.innerText = `HTTP Status: ${response.status}\n\n` + JSON.stringify(data, null, 2);
+            } catch (err) { resultBox.innerText = "❌ Lỗi: " + err.message; }
+        }
+    </script>
+</body>
+</html>
