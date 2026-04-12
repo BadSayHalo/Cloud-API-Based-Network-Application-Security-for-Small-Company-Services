@@ -20,6 +20,9 @@
         .col-left { flex: 1; display: flex; flex-direction: column; }
         .col-right { flex: 1; display: flex; flex-direction: column; }
         .badge { background: #eee; padding: 5px 10px; border-radius: 5px; font-weight: bold; font-size: 13px; display: inline-block; margin-bottom: 5px; width: 100%; box-sizing: border-box;}
+        
+        /* Style cho khung thông tin sản phẩm tự động */
+        .product-info-box { background: #e9ecef; border-left: 4px solid #ff9800; padding: 10px 15px; margin: 5px 0 15px 0; border-radius: 4px; font-size: 14px; color: #333;}
     </style>
 </head>
 <body>
@@ -39,10 +42,19 @@
 
             <div class="card">
                 <h2 class="step-2">➕ BƯỚC 2: TẠO ĐƠN HÀNG (MÃ HÓA AES)</h2>
-                <input type="text" id="laptopName" placeholder="Tên Laptop" value="MacBook Pro M3">
-                <input type="number" id="laptopPrice" placeholder="Giá tiền (VND)" value="40000000">
-                <input type="text" id="customerPhone" placeholder="Số điện thoại" value="0912345678">
-                <button class="btn-post" onclick="createOrder()">2. POST Data qua Kong Gateway</button>
+                
+                <input type="text" id="laptopSku" placeholder="Nhập Mã SKU (VD: MSI-005, APPL-006, DELL-007)" oninput="autoFillProduct()">
+                
+                <div class="product-info-box" id="productDisplay">
+                    Vui lòng nhập mã SKU hợp lệ để xem sản phẩm...
+                </div>
+
+                <div style="display: flex; gap: 10px;">
+                    <input type="number" id="laptopQty" placeholder="Số lượng" value="1" min="1" style="flex: 1;">
+                    <input type="text" id="customerPhone" placeholder="Số điện thoại" value="0912345678" style="flex: 2;">
+                </div>
+                
+                <button class="btn-post" onclick="createOrder()">2. Đặt Hàng qua Kong Gateway</button>
             </div>
 
             <div class="card" style="margin-bottom: 0;">
@@ -67,9 +79,55 @@
     </div>
 
     <script>
-        // Khai báo 2 biến để lưu thẻ
         let accessToken = ""; 
         let refreshToken = ""; 
+
+        // -----------------------------------------------------
+        // DATA MÔ PHỎNG (Mock Database cho giao diện)
+        // Trong thực tế, cái này sẽ được gọi bằng API GET từ Node.js
+        // -----------------------------------------------------
+        // -----------------------------------------------------
+        // DATA MÔ PHỎNG (Đã cập nhật đầy đủ từ products.json)
+        // -----------------------------------------------------
+        const mockDatabase = {
+            "APPL-001": { name: "MacBook Air M1 13\"", price: 999 },
+            "APPL-006": { name: "MacBook Pro M3 14\"", price: 1999 },
+            "APPL-008": { name: "MacBook Pro M3 Max 16\"", price: 3499 },
+            "ASUS-003": { name: "ASUS ZenBook 14 OLED", price: 999 },
+            "ASUS-008": { name: "ASUS ROG Zephyrus G14", price: 1499 },
+            "DELL-001": { name: "Dell Inspiron 15 3511", price: 699 },
+            "DELL-007": { name: "Dell XPS 13 9315", price: 1499 },
+            "DELL-012": { name: "Dell Alienware m15 R7", price: 2499 },
+            "HP-004":  { name: "HP ProBook 440 G10", price: 950 },
+            "HP-008":  { name: "HP Pavilion 15", price: 799 },
+            "MSI-005": { name: "MSI Katana 15 B12V", price: 999 }
+        };
+
+        // Biến toàn cục để lưu trữ Tên và Giá ẩn, chuẩn bị gửi lên Server
+        let currentItemName = "";
+        let currentUnitPrice = 0;
+
+        // Hàm tự động điền khi gõ SKU
+        function autoFillProduct() {
+            const skuInput = document.getElementById('laptopSku').value.trim().toUpperCase();
+            const displayBox = document.getElementById('productDisplay');
+
+            if (mockDatabase[skuInput]) {
+                const product = mockDatabase[skuInput];
+                currentItemName = product.name;
+                currentUnitPrice = product.price;
+                displayBox.innerHTML = `✅ <strong>Sản phẩm:</strong> ${product.name} <br> 💰 <strong>Đơn giá:</strong> $${product.price}`;
+                displayBox.style.borderLeftColor = "#28a745"; // Đổi màu xanh báo hiệu thành công
+            } else {
+                currentItemName = "";
+                currentUnitPrice = 0;
+                displayBox.innerHTML = `⚠️ <em>Không tìm thấy sản phẩm. Vui lòng kiểm tra lại mã SKU.</em>`;
+                displayBox.style.borderLeftColor = "#dc3545"; // Đổi màu đỏ báo lỗi
+            }
+        }
+
+        // Tự động chạy lần đầu để load sẵn mã MSI-005 đang điền sẵn
+        window.onload = autoFillProduct;
 
         // ==========================================
         // 1. GỌI LÊN KEYCLOAK LẤY TOKEN
@@ -79,7 +137,7 @@
             const pass = document.getElementById('password').value;
             const resultBox = document.getElementById('result');
 
-            const keycloakUrl = "http://localhost:8080/realms/Capstone-Realm/protocol/openid-connect/token";
+            const keycloakUrl = "http://localhost:8080/realms/laptop-store/protocol/openid-connect/token";
             const params = new URLSearchParams();
             params.append('client_id', 'kong-gateway'); 
             params.append('grant_type', 'password');
@@ -95,84 +153,69 @@
                 const data = await response.json();
                 if (data.access_token) {
                     accessToken = data.access_token;
-                    refreshToken = data.refresh_token; // Bắt lấy thẻ gia hạn để dùng lúc Đăng xuất
+                    refreshToken = data.refresh_token; 
                     
                     const payload = JSON.parse(atob(accessToken.split('.')[1]));
                     const expTime = new Date(payload.exp * 1000);
 
-                    document.getElementById('dash-user').innerText = payload.preferred_username;
+                    document.getElementById('dash-user').innerText = payload.preferred_username || payload.email || 'User';
                     document.getElementById('dash-session').innerText = payload.sid;
                     document.getElementById('dash-exp').innerText = expTime.toLocaleTimeString('vi-VN');
 
-                    resultBox.innerText = "🎉 ĐĂNG NHẬP THÀNH CÔNG!\n\nNhìn lên bảng Security Dashboard ở trên, Keycloak đã tự động tạo Session ID. Bạn có thể bấm nút 'Xem chuỗi JWT' để thấy mã gốc.";
+                    resultBox.innerText = "🎉 ĐĂNG NHẬP THÀNH CÔNG!\n\nNhìn lên bảng Security Dashboard ở trên, Keycloak đã tự động tạo Session ID.";
                 } else {
                     resultBox.innerText = "❌ ĐĂNG NHẬP THẤT BẠI!\n" + JSON.stringify(data, null, 2);
                 }
-            } catch (err) {
-                resultBox.innerText = "❌ Lỗi gọi Keycloak: " + err.message;
-            }
+            } catch (err) { resultBox.innerText = "❌ Lỗi gọi Keycloak: " + err.message; }
         }
 
-        // ==========================================
-        // TÍNH NĂNG MỚI: XEM JWT & ĐĂNG XUẤT
-        // ==========================================
         function showJWT() {
             const resultBox = document.getElementById('result');
-            if (!accessToken) {
-                resultBox.innerText = "⚠️ LỖI: Bạn chưa có JWT. Hãy đăng nhập trước!";
-            } else {
-                resultBox.innerText = "🎫 CHUỖI JWT CỦA BẠN LÀ:\n\n" + accessToken + "\n\n👉 Bạn có thể copy chuỗi này dán vào trang web https://jwt.io để soi chi tiết bên trong.";
-            }
+            if (!accessToken) resultBox.innerText = "⚠️ LỖI: Bạn chưa có JWT. Hãy đăng nhập trước!";
+            else resultBox.innerText = "🎫 CHUỖI JWT CỦA BẠN LÀ:\n\n" + accessToken;
         }
 
         async function logout() {
             const resultBox = document.getElementById('result');
             if (!refreshToken) return resultBox.innerText = "⚠️ BẠN CHƯA ĐĂNG NHẬP!";
 
-            const logoutUrl = "http://localhost:8080/realms/Capstone-Realm/protocol/openid-connect/logout";
+            const logoutUrl = "http://localhost:8080/realms/laptop-store/protocol/openid-connect/logout";
             const params = new URLSearchParams();
             params.append('client_id', 'kong-gateway');
             params.append('refresh_token', refreshToken);
 
             try {
                 resultBox.innerText = "⏳ Đang gửi yêu cầu hủy Session lên Keycloak...";
-                // Bắn API lên Keycloak để hủy phiên
-                await fetch(logoutUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: params
-                });
-
-                // Xóa token trên bộ nhớ Web
-                accessToken = "";
-                refreshToken = "";
-
-                // Reset giao diện
+                await fetch(logoutUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params });
+                accessToken = ""; refreshToken = "";
                 document.getElementById('dash-user').innerText = "Chưa đăng nhập";
                 document.getElementById('dash-session').innerText = "Trống";
                 document.getElementById('dash-exp').innerText = "Trống";
-                
-                resultBox.innerText = "✅ ĐÃ ĐĂNG XUẤT THÀNH CÔNG!\n\nSession ID đã bị hủy trên Keycloak và Token đã bị xóa khỏi Web.";
-            } catch (err) {
-                resultBox.innerText = "❌ Lỗi Đăng xuất: " + err.message;
-            }
+                resultBox.innerText = "✅ ĐÃ ĐĂNG XUẤT THÀNH CÔNG!";
+            } catch (err) { resultBox.innerText = "❌ Lỗi Đăng xuất: " + err.message; }
         }
 
         // ==========================================
-        // 2 & 3. GỌI API KONG GATEWAY (Không đổi)
+        // 2 & 3. GỌI API KONG GATEWAY
         // ==========================================
         async function createOrder() {
             const resultBox = document.getElementById('result');
             if (!accessToken) return resultBox.innerText = "⚠️ LỖI: Cần Đăng nhập lấy Token trước!";
+            
+            // Kiểm tra xem đã lấy được thông tin sản phẩm chưa
+            if (!currentItemName) return resultBox.innerText = "⚠️ LỖI: Mã SKU không hợp lệ, không thể đặt hàng!";
 
+            // Hút dữ liệu từ các ô input và biến ẩn
             const orderData = {
-                laptop_name: document.getElementById('laptopName').value,
-                price: document.getElementById('laptopPrice').value,
+                sku: document.getElementById('laptopSku').value.toUpperCase(),
+                item_name: currentItemName,
+                unit_price: currentUnitPrice,
+                qty: document.getElementById('laptopQty').value, // ĐÃ THÊM TRƯỜNG SỐ LƯỢNG
                 customer_phone: document.getElementById('customerPhone').value
             };
 
             try {
-                resultBox.innerText = "⏳ Đang gọi POST Kong Gateway (8000)...";
+                resultBox.innerText = `⏳ Đang gọi POST Kong Gateway (8000)...\n\nDữ liệu gửi đi:\n${JSON.stringify(orderData, null, 2)}`;
                 const response = await fetch("http://localhost:8000/api/v1/orders", {
                     method: 'POST', headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body: JSON.stringify(orderData)
                 });
