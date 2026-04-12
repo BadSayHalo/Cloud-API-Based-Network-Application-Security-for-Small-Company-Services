@@ -19,7 +19,6 @@ services:
     networks:
       - capstone-net
 
-
   frontend-web:
     build: ../frontend
     container_name: frontend-web
@@ -27,7 +26,6 @@ services:
       - "4000:80"
     networks:
       - capstone-net
-
 
   # 2. CƠ SỞ DỮ LIỆU CỦA ỨNG DỤNG (LAPTOP STORE)
   app-database:
@@ -58,13 +56,10 @@ services:
       - "3000:3000"
     environment:
       PORT: 3000
-      DB_USER: postgres
-      DB_PASSWORD: postgres_db_password
-      DB_HOST: 172.17.0.1  # Trỏ đúng tên container DB ở trên
-      DB_NAME: laptop_store
-    depends_on:
-      app-database:
-        condition: service_healthy # Đợi DB khởi tạo xong bảng mới chạy Node.js
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY} 
+      DATABASE_URL: ${DATABASE_URL}
+    volumes:
+      - ../certs:/app/certs
     networks:
       - capstone-net
 
@@ -72,12 +67,17 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:22.0
     container_name: keycloak-idp
-    command: start-dev
+    # THAY ĐỔI 1: Thêm cờ --import-realm để nó tự đọc file khi khởi động
+    command: start-dev --import-realm 
     environment:
+      KC_HOSTNAME: localhost
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
     ports:
       - "8080:8080"
+    # THAY ĐỔI 2: Gắn file JSON từ máy Windows vào "hòm thư" bí mật của Keycloak
+    volumes:
+      - ./realm-full.json:/opt/keycloak/data/import/realm.json
     networks:
       - capstone-net
 
