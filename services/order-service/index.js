@@ -1,82 +1,93 @@
 const express = require('express');
 const { Pool } = require('pg');
-const crypto = require('crypto');
+const https = require('https');
+const fs = require('fs');
+const crypto = require('crypto'); // <-- THÊM THƯ VIỆN NÀY
 
 const app = express();
 app.use(express.json());
 
 // ==========================================
-// 1. CẤU HÌNH KẾT NỐI POSTGRESQL (NỘI BỘ)
+// A. CẤU HÌNH BẢO MẬT AES-256
 // ==========================================
-const pool = new Pool({
-    user: process.env.DB_USER || 'postgres',
-    host: process.env.DB_HOST || '172.17.0.1', // Đường tắt "xuyên tường" đã setup
-    database: process.env.DB_NAME || 'laptop_store',
-    password: process.env.DB_PASSWORD || 'postgres_db_password',
-    port: 5432,
-});
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY; // Phải đủ 32 ký tự trong file .env
+const IV_LENGTH = 16;
 
-pool.connect()
-    .then(() => console.log('✅ Đã kết nối thành công với PostgreSQL!'))
-    .catch(err => console.error('❌ Lỗi kết nối Database:', err));
-
-// ==========================================
-// 2. MODULE CRYPTO: AES-256-GCM (BẢO VỆ DỮ LIỆU TĨNH)
-// ==========================================
-// Tạo một khóa bí mật 32-byte (Trong thực tế sẽ dùng biến môi trường .env)
-const ENCRYPTION_KEY = crypto.scryptSync('my_super_secret_key_nt219', 'salt', 32);
-
-// Hàm mã hóa (Khóa két sắt)
+// Hàm Mã hóa
 function encrypt(text) {
-    if (!text) return text;
-    const iv = crypto.randomBytes(12); // GCM khuyên dùng IV 12 bytes
-    const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+    if (!text) return null;
+    let iv = crypto.randomBytes(IV_LENGTH);
+    let cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(ENCRYPTION_KEY, 'utf-8'), iv);
     let encrypted = cipher.update(text, 'utf8', 'hex');
     encrypted += cipher.final('hex');
-    const authTag = cipher.getAuthTag().toString('hex');
+    let authTag = cipher.getAuthTag().toString('hex');
     return `${iv.toString('hex')}:${encrypted}:${authTag}`;
 }
 
-// Hàm giải mã (Mở két sắt)
-function decrypt(encText) {
-    if (!encText) return encText;
+// Hàm Giải mã
+function decrypt(text) {
+    if (!text) return null;
     try {
-        const parts = encText.split(':');
-        const iv = Buffer.from(parts[0], 'hex');
-        const encryptedText = parts[1];
-        const authTag = Buffer.from(parts[2], 'hex');
-        const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+        let parts = text.split(':');
+        let iv = Buffer.from(parts[0], 'hex');
+        let encryptedText = Buffer.from(parts[1], 'hex');
+        let authTag = Buffer.from(parts[2], 'hex');
+        let decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(ENCRYPTION_KEY, 'utf-8'), iv);
         decipher.setAuthTag(authTag);
         let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
         decrypted += decipher.final('utf8');
         return decrypted;
-    } catch (error) {
-        return "[Lỗi giải mã hoặc dữ liệu bị giả mạo]";
+    } catch (e) {
+        return "Lỗi giải mã";
     }
 }
 
 // ==========================================
-// 3. MIDDLEWARE XÁC THỰC (ĐỌC JWT TỪ KONG)
+// B. CẤU HÌNH mTLS VÀ SERVER
+// ==========================================
+const options = {
+    key: fs.readFileSync('./certs/node.key'),
+    cert: fs.readFileSync('./certs/node.crt'),
+    ca: [fs.readFileSync('./certs/ca.crt')],
+    requestCert: true,
+    rejectUnauthorized: true
+};
+
+https.createServer(options, app).listen(process.env.PORT || 3000, '0.0.0.0', () => {
+    console.log('🔒 Order Service is running with mTLS (HTTPS) on port 3000!');
+});
+
+// ==========================================
+// C. KẾT NỐI DATABASE (NEON CLOUD)
+// ==========================================
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
+pool.on('error', (err) => console.error('⚠️ Lỗi PostgreSQL:', err.message));
+pool.connect()
+    .then(client => {
+        console.log('✅ Đã kết nối PostgreSQL thành công!');
+        client.release();
+    })
+    .catch(e => console.error('❌ Lỗi kết nối lúc khởi động:', e));
+
+// ==========================================
+// D. BẢO VỆ VÒNG TRONG (XÁC THỰC JWT)
 // ==========================================
 function verifyUserContext(req, res, next) {
     const authHeader = req.headers['authorization'];
-    if (!authHeader) {
-        return res.status(401).json({ error: "Unauthorized - Missing Token Identity" });
-    }
+    if (!authHeader) return res.status(401).json({ error: "Missing Token" });
 
     try {
-        // Tách chuỗi "Bearer <token>"
         const token = authHeader.split(' ')[1];
-        
-        // Giải mã Payload của JWT (Kong đã lo việc verify chữ ký ES256 rồi, mình chỉ việc đọc nội dung)
         const payloadBase64 = token.split('.')[1];
-        const decodedPayload = Buffer.from(payloadBase64, 'base64').toString('utf-8');
-        const jwtData = JSON.parse(decodedPayload);
+        const jwtData = JSON.parse(Buffer.from(payloadBase64, 'base64').toString('utf-8'));
 
-        // Gán thông tin user vào Request. Ưu tiên lấy username (preferred_username của Keycloak)
         req.user = {
             id: jwtData.sub,
-            username: jwtData.preferred_username || jwtData.sub
+            username: jwtData.preferred_username || jwtData.email || 'unknown'
         };
         next();
     } catch (error) {
@@ -85,68 +96,62 @@ function verifyUserContext(req, res, next) {
 }
 
 // ==========================================
-// 4. API ENDPOINTS (NGHIỆP VỤ & BẢO MẬT)
+// E. API ROUTES
 // ==========================================
 
-// API TẠO ĐƠN HÀNG MỚI (Trình diễn mã hóa AES)
+// 1. TẠO ĐƠN HÀNG (MÃ HÓA SỐ ĐIỆN THOẠI)
+// 1. TẠO ĐƠN HÀNG (MÃ HÓA SỐ ĐIỆN THOẠI)
 app.post('/api/v1/orders', verifyUserContext, async (req, res) => {
-    const { laptop_name, price, customer_phone } = req.body;
-
-    // Mã hóa số điện thoại khách hàng bằng AES-256-GCM trước khi ném vào DB
-    const encryptedPhone = encrypt(customer_phone);
-
     try {
-        // ANTI-BOLA Cấp 1: Gắn cứng owner_id là người đang đăng nhập, không cho phép gửi ID giả mạo từ Body
+        const { sku, item_name, unit_price, qty, customer_phone } = req.body;
+        
+        // 1. Đưa mã hóa vào trong try-catch để nếu lỗi Key nó sẽ báo lỗi 500 chứ không sập server
+        const encryptedPhone = encrypt(customer_phone || "Không có SĐT");
+
+        console.log(`[BẢO MẬT] Nhận SKU: ${sku} | SĐT gốc: ${customer_phone} ---> Đã mã hóa`);
+
         const query = `
-            INSERT INTO orders (owner_id, laptop_name, price, customer_phone, status)
-            VALUES ($1, $2, $3, $4, 'Pending') RETURNING id
+            INSERT INTO orders (user_id, sku, item_name, qty, unit_price, customer_phone, order_date, status)
+            VALUES ($1, $2, $3, $4, $5, $6, CURRENT_DATE, 'Pending') RETURNING id
         `;
-        const values = [req.user.username, laptop_name, price, encryptedPhone];
+        
+        const values = [req.user.id, sku, item_name, qty || 1, unit_price, encryptedPhone];
         const { rows } = await pool.query(query, values);
 
-        res.status(201).json({
-            message: "Tạo đơn hàng thành công",
-            order_id: rows[0].id
-        });
+        res.status(201).json({ message: "Tạo đơn hàng thành công", order_id: rows[0].id });
+
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "Lỗi lưu trữ cơ sở dữ liệu" });
+        // Nếu có bất kỳ lỗi gì (Lỗi mã hóa, lỗi SQL, lỗi biến...), nó sẽ nhảy vào đây
+        console.error("🔥 LỖI XỬ LÝ POST:", err.message);
+        res.status(500).json({ error: "Lỗi hệ thống: " + err.message });
     }
 });
 
-// API LẤY DANH SÁCH ĐƠN HÀNG (Trình diễn Anti-BOLA và DTO)
+// 2. LẤY ĐƠN HÀNG (GIẢI MÁ VÀ MASKING DỮ LIỆU)
 app.get('/api/v1/orders', verifyUserContext, async (req, res) => {
     try {
-        // ANTI-BOLA Cấp 2: Chỉ Query ra những đơn hàng thuộc về chính User này
-        const query = 'SELECT * FROM orders WHERE owner_id = $1';
-        const { rows } = await pool.query(query, [req.user.username]);
+        const query = 'SELECT * FROM orders WHERE user_id = $1 ORDER BY order_date DESC';
+        const { rows } = await pool.query(query, [req.user.id]);
 
-        // DATA TRANSFER OBJECT (DTO) - Chống Excessive Data Exposure
         const safeOrders = rows.map(order => {
-            // Giải mã điện thoại, nhưng áp dụng Masking (che giấu) để tăng cường riêng tư
-            const rawPhone = decrypt(order.customer_phone);
-            const maskedPhone = rawPhone ? rawPhone.slice(-4).padStart(rawPhone.length, '*') : null;
+            // Giải mã số điện thoại từ DB
+            let rawPhone = decrypt(order.customer_phone);
+            // Masking (Che giấu): Chỉ hiện 4 số cuối, ví dụ ******8888
+            let maskedPhone = rawPhone ? rawPhone.replace(/.(?=.{4})/g, '*') : "N/A";
 
             return {
-                order_id: order.id,
-                product: order.laptop_name,
-                price: order.price,
-                status: order.status,
-                phone: maskedPhone // Trả về dạng ******8888 thay vì nguyên số
+                order_id: order.id, 
+                sku: order.sku, 
+                product: order.item_name,
+                total_price: order.total_price, 
+                status: order.status, 
+                order_date: order.order_date,
+                safe_phone: maskedPhone // Trả về số đã che
             };
         });
 
-        res.status(200).json({
-            user_context: req.user.username,
-            total_orders: safeOrders.length,
-            data: safeOrders
-        });
+        res.status(200).json({ user_context: req.user.id, total_orders: safeOrders.length, data: safeOrders });
     } catch (err) {
         res.status(500).json({ error: "Internal Server Error" });
     }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 Order Service running on port ${PORT}`);
 });
