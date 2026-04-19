@@ -26,6 +26,14 @@ services:
       - "4000:80"
     networks:
       - capstone-net
+      
+  admin-web:
+    build: ../admin-frontend
+    container_name: admin-web
+    ports:
+      - "4001:80" # Cổng 6000 dành riêng cho Admin
+    networks:
+      - capstone-net
 
   # 2. CƠ SỞ DỮ LIỆU CỦA ỨNG DỤNG (LAPTOP STORE)
   app-database:
@@ -84,3 +92,5 @@ services:
 networks:
   capstone-net:
     driver: bridge
+
+  
