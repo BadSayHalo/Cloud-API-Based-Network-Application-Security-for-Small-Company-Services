@@ -87,7 +87,9 @@ function verifyUserContext(req, res, next) {
 
         req.user = {
             id: jwtData.sub,
-            username: jwtData.preferred_username || jwtData.email || 'unknown'
+            username: jwtData.preferred_username || 'unknown',
+            email: jwtData.email || `${jwtData.preferred_username}@no-email.com`,   // Lấy email từ token
+            full_name: jwtData.name || jwtData.preferred_username || 'New User'     // Lấy tên từ token
         };
         next();
     } catch (error) {
@@ -95,17 +97,47 @@ function verifyUserContext(req, res, next) {
     }
 }
 
+// Middleware kiểm tra quyền Admin
+function requireAdminRole(req, res, next) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader.split(' ')[1];
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString('utf-8'));
+    
+    // Tìm role admin trong mảng realm_access
+    const roles = payload.realm_access?.roles || [];
+    
+    if (!roles.includes('admin')) {
+        console.warn(`[CẢNH BÁO] User ${req.user.username} cố tình gọi API Admin!`);
+        return res.status(403).json({ error: "Forbidden: Bạn không có quyền Quản trị viên!" });
+    }
+    next();
+}
+
 // ==========================================
 // E. API ROUTES
 // ==========================================
 
-// 1. TẠO ĐƠN HÀNG (MÃ HÓA SỐ ĐIỆN THOẠI)
-// 1. TẠO ĐƠN HÀNG (MÃ HÓA SỐ ĐIỆN THOẠI)
+// 1. TẠO ĐƠN HÀNG (MÃ HÓA SỐ ĐIỆN THOẠI & AUTO-SYNC USER)
 app.post('/api/v1/orders', verifyUserContext, async (req, res) => {
     try {
         const { sku, item_name, unit_price, qty, customer_phone } = req.body;
+        const userId = req.user.id;
+
+        // --- BƯỚC MỚI: AUTO-SYNC USER ---
+        // Kiểm tra xem User này đã tồn tại trong bảng users của PostgreSQL chưa
+        const userCheck = await pool.query('SELECT id FROM users WHERE id = $1', [userId]);
         
-        // 1. Đưa mã hóa vào trong try-catch để nếu lỗi Key nó sẽ báo lỗi 500 chứ không sập server
+        if (userCheck.rowCount === 0) {
+            // Nếu chưa có, tự động tạo hồ sơ mới dựa trên thông tin từ Keycloak
+            await pool.query(
+                'INSERT INTO users (id, email, full_name) VALUES ($1, $2, $3)',
+                [userId, req.user.email, req.user.full_name]
+            );
+            console.log(`[+] Đã tự động đồng bộ User mới từ Keycloak vào DB: ${req.user.username}`);
+        }
+        // --------------------------------
+
+        // Đưa mã hóa vào trong try-catch
         const encryptedPhone = encrypt(customer_phone || "Không có SĐT");
 
         console.log(`[BẢO MẬT] Nhận SKU: ${sku} | SĐT gốc: ${customer_phone} ---> Đã mã hóa`);
@@ -115,13 +147,12 @@ app.post('/api/v1/orders', verifyUserContext, async (req, res) => {
             VALUES ($1, $2, $3, $4, $5, $6, CURRENT_DATE, 'Pending') RETURNING id
         `;
         
-        const values = [req.user.id, sku, item_name, qty || 1, unit_price, encryptedPhone];
+        const values = [userId, sku, item_name, qty || 1, unit_price, encryptedPhone];
         const { rows } = await pool.query(query, values);
 
         res.status(201).json({ message: "Tạo đơn hàng thành công", order_id: rows[0].id });
 
     } catch (err) {
-        // Nếu có bất kỳ lỗi gì (Lỗi mã hóa, lỗi SQL, lỗi biến...), nó sẽ nhảy vào đây
         console.error("🔥 LỖI XỬ LÝ POST:", err.message);
         res.status(500).json({ error: "Lỗi hệ thống: " + err.message });
     }
@@ -154,4 +185,94 @@ app.get('/api/v1/orders', verifyUserContext, async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: "Internal Server Error" });
     }
+});
+
+// 3. HOÀN TẤT HỒ SƠ NGƯỜI DÙNG (Lưu SĐT và City)
+app.post('/api/v1/profile', verifyUserContext, async (req, res) => {
+    try {
+        const { phone, city } = req.body;
+        const userId = req.user.id;
+
+        // BẮT BUỘC: Mã hóa số điện thoại ngay tại đây
+        const encryptedPhone = encrypt(phone); 
+
+        console.log(`[BẢO MẬT] Đang mã hóa SĐT cho User: ${req.user.username}`);
+
+        const query = `
+            INSERT INTO users (id, email, full_name, phone, city)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (id) DO UPDATE 
+            SET phone = EXCLUDED.phone, 
+                city = EXCLUDED.city;
+        `;
+        
+        await pool.query(query, [
+            userId, 
+            req.user.email, 
+            req.user.full_name, 
+            encryptedPhone, // Lưu chuỗi đã mã hóa
+            city
+        ]);
+
+        res.status(200).json({ message: "Hồ sơ đã được mã hóa và lưu trữ an toàn!" });
+    } catch (err) {
+        console.error("🔥 LỖI CẬP NHẬT PROFILE:", err.message);
+        res.status(500).json({ error: "Lỗi hệ thống: " + err.message });
+    }
+});
+
+// 4. LẤY THÔNG TIN USER (GIẢI MÁ & MASKING)
+app.get('/api/v1/profile', verifyUserContext, async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT phone, city FROM users WHERE id = $1', [req.user.id]);
+        
+        if (rows.length > 0 && rows[0].phone) {
+            // Giải mã từ DB
+            const rawPhone = decrypt(rows[0].phone);
+            // Masking: hiện 4 số cuối (Ví dụ: ******8888)
+            const maskedPhone = rawPhone.replace(/.(?=.{4})/g, '*');
+            
+            return res.json({ 
+                phone: maskedPhone, 
+                city: rows[0].city 
+            });
+        }
+        res.json({ phone: "Chưa có", city: "Chưa có" });
+    } catch (err) {
+        res.status(500).json({ error: "Lỗi lấy thông tin" });
+    }
+});
+
+// ==========================================
+// F. ADMIN API ROUTES (Yêu cầu Token + Quyền Admin)
+// ==========================================
+
+// 1. Lấy danh sách tất cả User
+app.get('/api/v1/admin/users', verifyUserContext, requireAdminRole, async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT id, email, full_name, city FROM users ORDER BY created_at DESC');
+        res.status(200).json(rows);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 2. Lấy đơn hàng của một User cụ thể
+app.get('/api/v1/admin/orders/:userId', verifyUserContext, requireAdminRole, async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT * FROM orders WHERE user_id = $1 ORDER BY order_date DESC', [req.params.userId]);
+        // Tương tự, giải mã SĐT cho Admin xem
+        const safeOrders = rows.map(order => ({
+            ...order,
+            safe_phone: decrypt(order.customer_phone) // Admin được xem SĐT đầy đủ đã giải mã
+        }));
+        res.status(200).json(safeOrders);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 3. Cập nhật trạng thái thanh toán
+app.patch('/api/v1/admin/orders/:orderId/payment', verifyUserContext, requireAdminRole, async (req, res) => {
+    try {
+        const { payment_status } = req.body; // 'Paid' hoặc 'Unpaid'
+        await pool.query('UPDATE orders SET payment_status = $1 WHERE id = $2', [payment_status, req.params.orderId]);
+        res.status(200).json({ message: "Cập nhật thanh toán thành công!" });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
