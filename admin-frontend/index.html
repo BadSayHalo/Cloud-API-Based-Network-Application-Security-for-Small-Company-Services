@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>E-Commerce Admin Portal (Secured)</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1e1e2f; color: #fff; padding: 20px; }
+        .container { max-width: 1000px; margin: auto; }
+        .card { background: #2a2a40; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border-top: 4px solid #ff4757; }
+        input, button, select { padding: 10px; margin: 5px 0; border-radius: 5px; border: none; }
+        button { background-color: #ff4757; color: white; font-weight: bold; cursor: pointer; }
+        button:hover { background-color: #ff6b81; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #444; }
+        th { background-color: #33334c; color: #ff4757; }
+        tr:hover { background-color: #3b3b55; cursor: pointer; }
+        .badge-unpaid { background: #ff9f43; color: black; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: bold;}
+        .badge-paid { background: #2ed573; color: black; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: bold;}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 style="color: #ff4757;">🛡️ ADMIN PORTAL - ZERO TRUST NETWORK</h1>
+        
+        <div class="card" id="loginCard">
+            <h3>Đăng nhập Quản trị viên (Yêu cầu Role 'admin')</h3>
+            <input type="text" id="adminUser" placeholder="Admin Username">
+            <input type="password" id="adminPass" placeholder="Password">
+            <button onclick="adminLogin()">Đăng Nhập Hệ Thống</button>
+            <p id="loginMsg" style="color: #2ed573;"></p>
+        </div>
+
+        <div class="card" id="dashboardCard" style="display: none; border-top-color: #1e90ff;">
+            <h3 style="color: #1e90ff;">👥 Danh sách Khách hàng</h3>
+            <button onclick="fetchUsers()" style="background: #1e90ff;">Tải danh sách</button>
+            <table>
+                <thead><tr><th>UUID</th><th>Họ Tên</th><th>Email</th><th>Hành động</th></tr></thead>
+                <tbody id="userTable"></tbody>
+            </table>
+        </div>
+
+        <div class="card" id="ordersCard" style="display: none; border-top-color: #2ed573;">
+            <h3 style="color: #2ed573;">📦 Đơn hàng của User: <span id="selectedUserName"></span></h3>
+            <table>
+                <thead><tr><th>Mã Đơn</th><th>Sản phẩm</th><th>SĐT Giải mã (AES)</th><th>Thanh toán</th><th>Hành động</th></tr></thead>
+                <tbody id="orderTable"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let adminToken = "";
+
+        async function adminLogin() {
+            const user = document.getElementById('adminUser').value;
+            const pass = document.getElementById('adminPass').value;
+            const params = new URLSearchParams({ client_id: 'kong-gateway', grant_type: 'password', username: user, password: pass });
+
+            try {
+                const res = await fetch("http://localhost:8080/realms/laptop-store/protocol/openid-connect/token", {
+                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params
+                });
+                const data = await res.json();
+                if (data.access_token) {
+                    adminToken = data.access_token;
+                    document.getElementById('loginMsg').innerText = "✅ Đăng nhập thành công! Đang tải dữ liệu...";
+                    document.getElementById('dashboardCard').style.display = 'block';
+                    fetchUsers();
+                } else {
+                    alert("Đăng nhập thất bại!");
+                }
+            } catch (err) { alert("Lỗi Keycloak"); }
+        }
+
+        async function fetchUsers() {
+            const res = await fetch("http://localhost:8000/api/v1/admin/users", {
+                headers: { 'Authorization': 'Bearer ' + adminToken }
+            });
+            if(res.status === 403) return alert("BẠN KHÔNG CÓ QUYỀN ADMIN!");
+            
+            const users = await res.json();
+            const tbody = document.getElementById('userTable');
+            tbody.innerHTML = '';
+            users.forEach(u => {
+                tbody.innerHTML += `
+                    <tr>
+                        <td style="font-size:11px;">${u.id}</td>
+                        <td>${u.full_name}</td>
+                        <td>${u.email}</td>
+                        <td><button style="background:#1e90ff; padding:5px 10px;" onclick="fetchUserOrders('${u.id}', '${u.full_name}')">Xem Đơn</button></td>
+                    </tr>`;
+            });
+        }
+
+        async function fetchUserOrders(userId, userName) {
+            document.getElementById('selectedUserName').innerText = userName;
+            document.getElementById('ordersCard').style.display = 'block';
+
+            const res = await fetch(`http://localhost:8000/api/v1/admin/orders/${userId}`, {
+                headers: { 'Authorization': 'Bearer ' + adminToken }
+            });
+            const orders = await res.json();
+            const tbody = document.getElementById('orderTable');
+            tbody.innerHTML = '';
+            
+            if(orders.length === 0) return tbody.innerHTML = "<tr><td colspan='5'>Khách hàng này chưa có đơn hàng nào.</td></tr>";
+
+            orders.forEach(o => {
+                const badgeClass = o.payment_status === 'Paid' ? 'badge-paid' : 'badge-unpaid';
+                const actionBtn = o.payment_status === 'Paid' 
+                    ? `<button style="background:#576574; padding:5px;" onclick="updatePayment(${o.id}, 'Unpaid', '${userId}', '${userName}')">Hủy TT</button>`
+                    : `<button style="background:#2ed573; padding:5px;" onclick="updatePayment(${o.id}, 'Paid', '${userId}', '${userName}')">Duyệt TT</button>`;
+
+                tbody.innerHTML += `
+                    <tr>
+                        <td>#${o.id}</td>
+                        <td>${o.item_name}</td>
+                        <td style="color:#ff4757;">${o.safe_phone} (AES)</td>
+                        <td><span class="${badgeClass}">${o.payment_status || 'Unpaid'}</span></td>
+                        <td>${actionBtn}</td>
+                    </tr>`;
+            });
+        }
+
+        async function updatePayment(orderId, newStatus, userId, userName) {
+            await fetch(`http://localhost:8000/api/v1/admin/orders/${orderId}/payment`, {
+                method: 'PATCH',
+                headers: { 'Authorization': 'Bearer ' + adminToken, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ payment_status: newStatus })
+            });
+            // Tải lại danh sách đơn hàng sau khi update
+            fetchUserOrders(userId, userName);
+        }
+    </script>
+</body>
+</html>
