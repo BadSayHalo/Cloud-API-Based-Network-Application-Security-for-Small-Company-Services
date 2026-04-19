@@ -1,6 +1,6 @@
 -- ============================================================
 --  Cloud-API-Based-Network-Application-Security
---  Database: Laptop Store — Đã gỡ mã hóa, Cập nhật UUID mới (Lần cuối)
+--  Database: Laptop Store 
 -- ============================================================
 
 DROP TYPE IF EXISTS order_status CASCADE;
