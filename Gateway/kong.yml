@@ -22,6 +22,7 @@ certificates:
       AwEHoUQDQgAEcHLx0BGgTHyA/132uHogquNHfacQ+2qLsBGLR19piqu0x8lCat41
       GCElJe3WxM8pKMIHeVCBPeSmkwUfxzC+Pw==
       -----END EC PRIVATE KEY-----
+      
 # ==========================================
 # 2. CẤU HÌNH DỊCH VỤ VÀ GẮN HỘ CHIẾU
 # ==========================================
@@ -33,7 +34,7 @@ services:
     routes:
       - name: fetch-orders
         paths:
-          - /api/v1/orders
+          - /api/v1
         strip_path: false
 
 # =========
@@ -77,9 +78,9 @@ consumers:
   # KHAI BÁO KEYCLOAK LÀ BÊN CẤP PHÁT DUY NHẤT
   - username: "keycloak-issuer"
     jwt_secrets:
-      - key: "http://keycloak-idp:8080/realms/laptop-store" 
+      - key: "http://localhost:8080/realms/laptop-store" 
         algorithm: ES256 
         rsa_public_key: |
           -----BEGIN PUBLIC KEY-----
-          MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEM5t81FvWxhHdmbZNaa+Qw+DL0ObAQjs6zT7kd4eu+8eG7P2aE53rNrELivyRqhbmxsW5Ys5CoAb4yzAzQPsVMw==
+          MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAESyniahnHumHiGzbUXyFpicO8PX74YaXQLTJfDOV7ga2DlnbgX5oP7bkvDGEiq0T1ImtarQgL2dZJY5y4G0Y77w==
           -----END PUBLIC KEY-----
