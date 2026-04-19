@@ -12,6 +12,10 @@
         input, button { width: 100%; padding: 10px; margin: 8px 0; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
         button { color: white; border: none; font-weight: bold; cursor: pointer; transition: 0.3s; }
         .btn-login { background-color: #007bff; } .btn-login:hover { background-color: #0056b3; }
+        
+        /* THÊM STYLE CHO NÚT ĐĂNG KÝ */
+        .btn-register { background-color: #17a2b8; } .btn-register:hover { background-color: #138496; }
+        
         .btn-logout { background-color: #dc3545; width: 48%; display: inline-block; } .btn-logout:hover { background-color: #c82333; }
         .btn-view { background-color: #6c757d; width: 48%; display: inline-block; margin-left: 3%; } .btn-view:hover { background-color: #5a6268; }
         .btn-post { background-color: #ff9800; } .btn-post:hover { background-color: #e68a00; }
@@ -31,13 +35,26 @@
         <div class="col-left">
             <div class="card">
                 <h2 class="step-1">🔑 BƯỚC 1: QUẢN LÝ PHIÊN (KEYCLOAK)</h2>
-                <input type="text" id="username" placeholder="Username" value="nguyen.van.an">
+                <input type="text" id="username" placeholder="Username" value="buithihoa">
                 <input type="password" id="password" placeholder="Password" value="123456">
                 <button class="btn-login" onclick="login()">1. Đăng Nhập (Lấy JWT)</button>
+                
+                <button class="btn-register" onclick="register()">Đăng Ký Tài Khoản Mới</button>
+                
                 <div>
                     <button class="btn-logout" onclick="logout()">Đăng Xuất</button>
                     <button class="btn-view" onclick="showJWT()">Xem chuỗi JWT</button>
                 </div>
+            </div>
+
+            <div class="card" id="profileCard" style="display: none; border-left: 4px solid #17a2b8;">
+                <h2 style="color: #17a2b8;">📝 HOÀN TẤT HỒ SƠ</h2>
+                <p style="font-size: 13px; color: #666; margin-top: 0;">Vui lòng cập nhật thông tin trước khi đặt hàng.</p>
+                <div style="display: flex; gap: 10px;">
+                    <input type="text" id="userPhone" placeholder="Số điện thoại" style="flex: 1;">
+                    <input type="text" id="userCity" placeholder="Thành phố (VD: Hồ Chí Minh)" style="flex: 1;">
+                </div>
+                <button class="btn-register" onclick="updateProfile()">Lưu Thông Tin (Mã hóa AES)</button>
             </div>
 
             <div class="card">
@@ -83,31 +100,29 @@
         let refreshToken = ""; 
 
         // -----------------------------------------------------
-        // DATA MÔ PHỎNG (Mock Database cho giao diện)
-        // Trong thực tế, cái này sẽ được gọi bằng API GET từ Node.js
-        // -----------------------------------------------------
-        // -----------------------------------------------------
-        // DATA MÔ PHỎNG (Đã cập nhật đầy đủ từ products.json)
+        // DATA MÔ PHỎNG (Đơn vị: VNĐ)
         // -----------------------------------------------------
         const mockDatabase = {
-            "APPL-001": { name: "MacBook Air M1 13\"", price: 999 },
-            "APPL-006": { name: "MacBook Pro M3 14\"", price: 1999 },
-            "APPL-008": { name: "MacBook Pro M3 Max 16\"", price: 3499 },
-            "ASUS-003": { name: "ASUS ZenBook 14 OLED", price: 999 },
-            "ASUS-008": { name: "ASUS ROG Zephyrus G14", price: 1499 },
-            "DELL-001": { name: "Dell Inspiron 15 3511", price: 699 },
-            "DELL-007": { name: "Dell XPS 13 9315", price: 1499 },
-            "DELL-012": { name: "Dell Alienware m15 R7", price: 2499 },
-            "HP-004":  { name: "HP ProBook 440 G10", price: 950 },
-            "HP-008":  { name: "HP Pavilion 15", price: 799 },
-            "MSI-005": { name: "MSI Katana 15 B12V", price: 999 }
+            "APPL-001": { name: "MacBook Air M1 13\"", price: 24975000 },
+            "APPL-006": { name: "MacBook Pro M3 14\"", price: 49975000 },
+            "APPL-008": { name: "MacBook Pro M3 Max 16\"", price: 87475000 },
+            "ASUS-003": { name: "ASUS ZenBook 14 OLED", price: 24975000 },
+            "ASUS-008": { name: "ASUS ROG Zephyrus G14", price: 37475000 },
+            "ASUS-011": { name: "ASUS ProArt Studiobook 16", price: 54975000 },
+            "DELL-001": { name: "Dell Inspiron 15 3511", price: 17475000 },
+            "DELL-007": { name: "Dell XPS 13 9315", price: 37475000 },
+            "DELL-012": { name: "Dell Alienware m15 R7", price: 62475000 },
+            "HP-004":   { name: "HP ProBook 440 G10", price: 23750000 },
+            "HP-008":   { name: "HP Pavilion 15", price: 32475000 },
+            "LNVO-002": { name: "Lenovo IdeaPad Slim 5", price: 17475000 },
+            "LNVO-007": { name: "Lenovo Legion 5 Gen 8", price: 27475000 },
+            "MSI-001":  { name: "MSI Modern 14 C12M", price: 17475000 },
+            "MSI-005":  { name: "MSI Katana 15 B12V", price: 24975000 }
         };
 
-        // Biến toàn cục để lưu trữ Tên và Giá ẩn, chuẩn bị gửi lên Server
         let currentItemName = "";
         let currentUnitPrice = 0;
 
-        // Hàm tự động điền khi gõ SKU
         function autoFillProduct() {
             const skuInput = document.getElementById('laptopSku').value.trim().toUpperCase();
             const displayBox = document.getElementById('productDisplay');
@@ -116,18 +131,78 @@
                 const product = mockDatabase[skuInput];
                 currentItemName = product.name;
                 currentUnitPrice = product.price;
-                displayBox.innerHTML = `✅ <strong>Sản phẩm:</strong> ${product.name} <br> 💰 <strong>Đơn giá:</strong> $${product.price}`;
-                displayBox.style.borderLeftColor = "#28a745"; // Đổi màu xanh báo hiệu thành công
+                displayBox.innerHTML = `✅ <strong>Sản phẩm:</strong> ${product.name} <br> 💰 <strong>Đơn giá:</strong> ${product.price.toLocaleString('vi-VN')} VNĐ`;
+                displayBox.style.borderLeftColor = "#28a745";
             } else {
                 currentItemName = "";
                 currentUnitPrice = 0;
                 displayBox.innerHTML = `⚠️ <em>Không tìm thấy sản phẩm. Vui lòng kiểm tra lại mã SKU.</em>`;
-                displayBox.style.borderLeftColor = "#dc3545"; // Đổi màu đỏ báo lỗi
+                displayBox.style.borderLeftColor = "#dc3545";
             }
         }
 
-        // Tự động chạy lần đầu để load sẵn mã MSI-005 đang điền sẵn
-        window.onload = autoFillProduct;
+        // TỰ ĐỘNG BẮT SỰ KIỆN KHI KEYCLOAK CHUYỂN HƯỚNG VỀ (Sau khi đăng ký)
+        window.onload = () => {
+            autoFillProduct();
+            
+            // Nếu trên URL có chứa mã code trả về từ Keycloak
+            if (window.location.search.includes('code=')) {
+                // Xóa query parameter trên thanh URL cho gọn gàng
+                window.history.replaceState({}, document.title, window.location.pathname);
+                
+                // Hiện thông báo chúc mừng
+                const resultBox = document.getElementById('result');
+                resultBox.innerText = "🎉 BẠN ĐÃ ĐĂNG KÝ THÀNH CÔNG TRÊN KEYCLOAK!\n\nHệ thống đã lưu thông tin của bạn. Bây giờ hãy nhập Username và Password bạn vừa tạo để Đăng Nhập nhé!";
+                resultBox.style.color = "#28a745";
+            }
+        };
+
+        // ==========================================
+        // ĐĂNG KÝ (CHUYỂN HƯỚNG SANG KEYCLOAK)
+        // ==========================================
+        function register() {
+            // Lấy chính xác địa chỉ web hiện tại để Keycloak biết đường gọi về
+            const currentUrl = encodeURIComponent(window.location.href.split('?')[0]);
+            
+            // Endpoint đăng ký chuẩn của OpenID Connect
+            const registerUrl = `http://localhost:8080/realms/laptop-store/protocol/openid-connect/registrations?client_id=kong-gateway&response_type=code&scope=openid&redirect_uri=${currentUrl}`;
+            
+            // Chuyển hướng trình duyệt
+            window.location.href = registerUrl;
+        }
+
+        // ==========================================
+        // CẬP NHẬT HỒ SƠ SAU KHI ĐĂNG NHẬP
+        // ==========================================
+        async function updateProfile() {
+            const resultBox = document.getElementById('result');
+            if (!accessToken) return resultBox.innerText = "⚠️ LỖI: Bạn cần đăng nhập trước!";
+
+            const profileData = {
+                phone: document.getElementById('userPhone').value,
+                city: document.getElementById('userCity').value
+            };
+
+            try {
+                resultBox.innerText = "⏳ Đang gửi thông tin xuống Backend để mã hóa và lưu DB...";
+                const response = await fetch("http://localhost:8000/api/v1/profile", {
+                    method: 'POST', 
+                    headers: { 
+                        'Authorization': 'Bearer ' + accessToken, 
+                        'Content-Type': 'application/json' 
+                    }, 
+                    body: JSON.stringify(profileData)
+                });
+                
+                const data = await response.json();
+                if (response.ok) {
+                    resultBox.innerText = `HTTP Status: 200\\n\\n✅ ${data.message}`;
+                    document.getElementById('profileCard').style.display = 'none'; // Ẩn form đi sau khi lưu xong
+                } else {
+                    resultBox.innerText = `HTTP Status: ${response.status}\\n\\n❌ Lỗi: ${data.error}`;
+                }
+            } catch (err) { resultBox.innerText = "❌ Lỗi: " + err.message; }
+        }
 
         // ==========================================
         // 1. GỌI LÊN KEYCLOAK LẤY TOKEN
@@ -136,6 +211,7 @@
             const user = document.getElementById('username').value;
             const pass = document.getElementById('password').value;
             const resultBox = document.getElementById('result');
+            resultBox.style.color = "#61dafb"; // Đặt lại màu chữ mặc định
 
             const keycloakUrl = "http://localhost:8080/realms/laptop-store/protocol/openid-connect/token";
             const params = new URLSearchParams();
@@ -163,20 +239,27 @@
                     document.getElementById('dash-exp').innerText = expTime.toLocaleTimeString('vi-VN');
 
                     resultBox.innerText = "🎉 ĐĂNG NHẬP THÀNH CÔNG!\n\nNhìn lên bảng Security Dashboard ở trên, Keycloak đã tự động tạo Session ID.";
-                } else {
+                    document.getElementById('profileCard').style.display = 'block'; // Hiện form cập nhật hồ sơ sau khi đăng nhập thành công
+                } 
+                
+                else {
                     resultBox.innerText = "❌ ĐĂNG NHẬP THẤT BẠI!\n" + JSON.stringify(data, null, 2);
                 }
-            } catch (err) { resultBox.innerText = "❌ Lỗi gọi Keycloak: " + err.message; }
+            } 
+            
+            catch (err) { resultBox.innerText = "❌ Lỗi gọi Keycloak: " + err.message; }
         }
 
         function showJWT() {
             const resultBox = document.getElementById('result');
+            resultBox.style.color = "#61dafb";
             if (!accessToken) resultBox.innerText = "⚠️ LỖI: Bạn chưa có JWT. Hãy đăng nhập trước!";
             else resultBox.innerText = "🎫 CHUỖI JWT CỦA BẠN LÀ:\n\n" + accessToken;
         }
 
         async function logout() {
             const resultBox = document.getElementById('result');
+            resultBox.style.color = "#61dafb";
             if (!refreshToken) return resultBox.innerText = "⚠️ BẠN CHƯA ĐĂNG NHẬP!";
 
             const logoutUrl = "http://localhost:8080/realms/laptop-store/protocol/openid-connect/logout";
@@ -200,17 +283,15 @@
         // ==========================================
         async function createOrder() {
             const resultBox = document.getElementById('result');
+            resultBox.style.color = "#61dafb";
             if (!accessToken) return resultBox.innerText = "⚠️ LỖI: Cần Đăng nhập lấy Token trước!";
-            
-            // Kiểm tra xem đã lấy được thông tin sản phẩm chưa
             if (!currentItemName) return resultBox.innerText = "⚠️ LỖI: Mã SKU không hợp lệ, không thể đặt hàng!";
 
-            // Hút dữ liệu từ các ô input và biến ẩn
             const orderData = {
                 sku: document.getElementById('laptopSku').value.toUpperCase(),
                 item_name: currentItemName,
                 unit_price: currentUnitPrice,
-                qty: document.getElementById('laptopQty').value, // ĐÃ THÊM TRƯỜNG SỐ LƯỢNG
+                qty: document.getElementById('laptopQty').value,
                 customer_phone: document.getElementById('customerPhone').value
             };
 
@@ -226,6 +307,7 @@
 
         async function fetchOrders() {
             const resultBox = document.getElementById('result');
+            resultBox.style.color = "#61dafb";
             if (!accessToken) return resultBox.innerText = "⚠️ LỖI: Cần Đăng nhập lấy Token trước!";
 
             try {
