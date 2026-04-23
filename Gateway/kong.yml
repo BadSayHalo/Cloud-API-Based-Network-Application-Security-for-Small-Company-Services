@@ -43,6 +43,24 @@ plugins:
       minute: 10
       policy: local
   
+  - name: pre-function
+    config:
+      access:
+        - |
+          local req_body = ngx.req.get_body_data()
+          if req_body then
+            -- Quét các từ khóa tấn công cơ bản (SQLi, XSS)
+            local patterns = {"OR%s+1=1", "UNION%s+SELECT", "DROP%s+TABLE", "<SCRIPT>", "ALERT%("}
+            for _, pattern in ipairs(patterns) do
+              if string.find(string.upper(req_body), pattern) then
+                ngx.status = 403
+                ngx.header.content_type = "application/json"
+                ngx.say('{"error": "WAF: Phát hiện hành vi tấn công nguy hiểm!"}')
+                return ngx.exit(ngx.status)
+              end
+            end
+          end
+
   - name: cors
     config:
       origins:
@@ -77,9 +95,10 @@ consumers:
   # KHAI BÁO KEYCLOAK LÀ BÊN CẤP PHÁT DUY NHẤT
   - username: "keycloak-issuer"
     jwt_secrets:
-      - key: "http://keycloak-idp:8080/realms/laptop-store" 
-        algorithm: ES256 
+      - key: "http://localhost:8080/realms/laptop-store"
+        algorithm: ES256
         rsa_public_key: |
           -----BEGIN PUBLIC KEY-----
-          MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEM5t81FvWxhHdmbZNaa+Qw+DL0ObAQjs6zT7kd4eu+8eG7P2aE53rNrELivyRqhbmxsW5Ys5CoAb4yzAzQPsVMw==
+          MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAESyniahnHumHiGzbUXyFpicO8PX74
+          YaXQLTJfDOV7ga2DlnbgX5oP7bkvDGEiq0T1ImtarQgL2dZJY5y4G0Y77w==
           -----END PUBLIC KEY-----
