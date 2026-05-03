@@ -1,6 +1,6 @@
 # Cloud-API-Based-Network-Application-Security-for-Small-Company-Services
 
-
+```
 
 project-root/
   ├─ infra/              # Container orchestration details
@@ -22,3 +22,4 @@ project-root/
   │  └─ requirements.txt
   └─ docs/               # Architecture logic and outcomes
      └─ final_report.md  # Where you log outcomes (e.g., SSRF results)
+```
