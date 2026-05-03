@@ -1,0 +1,5 @@
+# Không cho phép đẩy các file chứa ID và Key lên GitHub
+.vault-ids/role-id
+.vault-ids/secret-id
+vault_keys.txt
+*.env

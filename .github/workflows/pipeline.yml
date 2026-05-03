@@ -1,0 +1,53 @@
+name: CI/CD Pipeline
+
+# Kích hoạt khi có code mới đẩy lên nhánh main
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-security-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Kéo code từ repository về
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v3
+
+      # 2. Cài đặt môi trường Node.js
+      - name: ⚙️ Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      # 3. Cài đặt thư viện cho Backend
+      - name: 📦 Install Backend Dependencies
+        run: |
+          cd services/order-service
+          npm install
+
+      # 4. [SECURITY] Quét lỗ hổng các thư viện Node.js (SCA)
+      - name: 🛡️ NPM Security Audit
+        run: |
+          cd services/order-service
+          npm audit --audit-level=high || true 
+          # (Thêm || true để pipeline không bị sập nếu phát hiện lỗi, chỉ cảnh báo)
+
+      # 5. Build Docker Image cho Backend
+      - name: 🐳 Build Docker Image
+        run: |
+          cd services/order-service
+          docker build -t capstone-backend:latest .
+
+      # 6. [SECURITY] Quét lỗ hổng Docker Image bằng Trivy
+      - name: 🔍 Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'capstone-backend:latest'
+          format: 'table'
+          exit-code: '0' 
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'

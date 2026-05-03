@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>E-Commerce Security Demo</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; display: flex; justify-content: center; align-items: flex-start; padding-top: 30px; height: 100vh; margin: 0; }
+        .container { width: 950px; display: flex; gap: 20px; }
+        .card { background: white; padding: 25px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); width: 100%; margin-bottom: 20px;}
+        h2 { text-align: center; color: #333; font-size: 16px; border-bottom: 2px solid; padding-bottom: 8px; margin-top: 0; }
+        .step-1 { border-color: #007bff; } .step-2 { border-color: #ff9800; } .step-3 { border-color: #28a745; } .sec-dash { border-color: #dc3545; color: #dc3545;}
+        input, button { width: 100%; padding: 10px; margin: 8px 0; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
+        button { color: white; border: none; font-weight: bold; cursor: pointer; transition: 0.3s; }
+        .btn-login { background-color: #007bff; } .btn-login:hover { background-color: #0056b3; }
+        
+        /* THÊM STYLE CHO NÚT ĐĂNG KÝ */
+        .btn-register { background-color: #17a2b8; } .btn-register:hover { background-color: #138496; }
+        
+        .btn-logout { background-color: #dc3545; width: 48%; display: inline-block; } .btn-logout:hover { background-color: #c82333; }
+        .btn-view { background-color: #6c757d; width: 48%; display: inline-block; margin-left: 3%; } .btn-view:hover { background-color: #5a6268; }
+        .btn-post { background-color: #ff9800; } .btn-post:hover { background-color: #e68a00; }
+        .btn-get { background-color: #28a745; } .btn-get:hover { background-color: #218838; }
+        pre { background: #282c34; color: #61dafb; padding: 15px; border-radius: 5px; overflow-x: auto; font-size: 13px; height: 350px; margin: 0; white-space: pre-wrap; word-break: break-all;}
+        .col-left { flex: 1; display: flex; flex-direction: column; }
+        .col-right { flex: 1; display: flex; flex-direction: column; }
+        .badge { background: #eee; padding: 5px 10px; border-radius: 5px; font-weight: bold; font-size: 13px; display: inline-block; margin-bottom: 5px; width: 100%; box-sizing: border-box;}
+        
+        /* Style cho khung thông tin sản phẩm tự động */
+        .product-info-box { background: #e9ecef; border-left: 4px solid #ff9800; padding: 10px 15px; margin: 5px 0 15px 0; border-radius: 4px; font-size: 14px; color: #333;}
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div class="col-left">
+            <div class="card">
+                <h2 class="step-1">🔑 BƯỚC 1: QUẢN LÝ PHIÊN (KEYCLOAK)</h2>
+                <input type="text" id="username" placeholder="Username" value="buithihoa">
+                <input type="password" id="password" placeholder="Password" value="123456">
+                <button class="btn-login" onclick="login()">1. Đăng Nhập (Lấy JWT)</button>
+                
+                <button class="btn-register" onclick="register()">Đăng Ký Tài Khoản Mới</button>
+                
+                <div>
+                    <button class="btn-logout" onclick="logout()">Đăng Xuất</button>
+                    <button class="btn-view" onclick="showJWT()">Xem chuỗi JWT</button>
+                </div>
+            </div>
+
+            <div class="card" id="profileCard" style="display: none; border-left: 4px solid #17a2b8;">
+                <h2 style="color: #17a2b8;">📝 HOÀN TẤT HỒ SƠ</h2>
+                <p style="font-size: 13px; color: #666; margin-top: 0;">Vui lòng cập nhật thông tin trước khi đặt hàng.</p>
+                <div style="display: flex; gap: 10px;">
+                    <input type="text" id="userPhone" placeholder="Số điện thoại" style="flex: 1;">
+                    <input type="text" id="userCity" placeholder="Thành phố (VD: Hồ Chí Minh)" style="flex: 1;">
+                </div>
+                <button class="btn-register" onclick="updateProfile()">Lưu Thông Tin (Mã hóa AES)</button>
+            </div>
+
+            <div class="card">
+                <h2 class="step-2">➕ BƯỚC 2: TẠO ĐƠN HÀNG (MÃ HÓA AES)</h2>
+                
+                <input type="text" id="laptopSku" placeholder="Nhập Mã SKU (VD: MSI-005, APPL-006, DELL-007)" oninput="autoFillProduct()">
+                
+                <div class="product-info-box" id="productDisplay">
+                    Vui lòng nhập mã SKU hợp lệ để xem sản phẩm...
+                </div>
+
+                <div style="display: flex; gap: 10px;">
+                    <input type="number" id="laptopQty" placeholder="Số lượng" value="1" min="1" style="flex: 1;">
+                    <input type="text" id="customerPhone" placeholder="Số điện thoại" value="0912345678" style="flex: 2;">
+                </div>
+                
+                <button class="btn-post" onclick="createOrder()">2. Đặt Hàng qua Kong Gateway</button>
+            </div>
+
+            <div class="card" style="margin-bottom: 0;">
+                <h2 class="step-3">🛒 BƯỚC 3: XEM ĐƠN HÀNG (ANTI-BOLA)</h2>
+                <button class="btn-get" onclick="fetchOrders()">3. GET Data qua Kong Gateway</button>
+
+                <div style="margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 15px;">
+                    <input type="number" id="actionOrderId" placeholder="Nhập ID đơn hàng cần xử lý...">
+                    <div style="display: flex; gap: 10px; margin-top: 5px;">
+                        <button class="btn-logout" style="flex: 1;" onclick="cancelOrder()">❌ Hủy Đơn</button>
+                        <button class="btn-get" style="flex: 1; background-color: #20c997;" onclick="confirmDelivery()">📦 Đã Nhận Hàng</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-right">
+            <div class="card" style="background: #fff3f3; border: 1px solid #ffcccc; padding-bottom: 10px;">
+                <h2 class="sec-dash">🛡️ SECURITY DASHBOARD</h2>
+                <div class="badge">👤 User: <span id="dash-user" style="color: #007bff;">Chưa đăng nhập</span></div>
+                <div class="badge">🎟️ Session ID: <span id="dash-session" style="color: #28a745;">Trống</span></div>
+                <div class="badge">⏳ Token Hết Hạn: <span id="dash-exp" style="color: #dc3545;">Trống</span></div>
+            </div>
+
+            <div class="card" style="height: 100%; padding: 0; background: #282c34;">
+                <h2 style="color: white; border-bottom-color: #666; padding: 15px; margin: 0;">🖥️ KẾT QUẢ TỪ BACKEND NODE.JS</h2>
+                <pre id="result">Hệ thống sẵn sàng. Đang chờ thao tác...</pre>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let accessToken = ""; 
+        let refreshToken = ""; 
+
+        // -----------------------------------------------------
+        // DATA MÔ PHỎNG (Đơn vị: VNĐ)
+        // -----------------------------------------------------
+        const mockDatabase = {
+            "APPL-001": { name: "MacBook Air M1 13\"", price: 24975000 },
+            "APPL-006": { name: "MacBook Pro M3 14\"", price: 49975000 },
+            "APPL-008": { name: "MacBook Pro M3 Max 16\"", price: 87475000 },
+            "ASUS-003": { name: "ASUS ZenBook 14 OLED", price: 24975000 },
+            "ASUS-008": { name: "ASUS ROG Zephyrus G14", price: 37475000 },
+            "ASUS-011": { name: "ASUS ProArt Studiobook 16", price: 54975000 },
+            "DELL-001": { name: "Dell Inspiron 15 3511", price: 17475000 },
+            "DELL-007": { name: "Dell XPS 13 9315", price: 37475000 },
+            "DELL-012": { name: "Dell Alienware m15 R7", price: 62475000 },
+            "HP-004":   { name: "HP ProBook 440 G10", price: 23750000 },
+            "HP-008":   { name: "HP Pavilion 15", price: 32475000 },
+            "LNVO-002": { name: "Lenovo IdeaPad Slim 5", price: 17475000 },
+            "LNVO-007": { name: "Lenovo Legion 5 Gen 8", price: 27475000 },
+            "MSI-001":  { name: "MSI Modern 14 C12M", price: 17475000 },
+            "MSI-005":  { name: "MSI Katana 15 B12V", price: 24975000 }
+        };
+
+        let currentItemName = "";
+        let currentUnitPrice = 0;
+
+        function autoFillProduct() {
+            const skuInput = document.getElementById('laptopSku').value.trim().toUpperCase();
+            const displayBox = document.getElementById('productDisplay');
+
+            if (mockDatabase[skuInput]) {
+                const product = mockDatabase[skuInput];
+                currentItemName = product.name;
+                currentUnitPrice = product.price;
+                displayBox.innerHTML = `✅ <strong>Sản phẩm:</strong> ${product.name} <br> 💰 <strong>Đơn giá:</strong> ${product.price.toLocaleString('vi-VN')} VNĐ`;
+                displayBox.style.borderLeftColor = "#28a745";
+            } else {
+                currentItemName = "";
+                currentUnitPrice = 0;
+                displayBox.innerHTML = `⚠️ <em>Không tìm thấy sản phẩm. Vui lòng kiểm tra lại mã SKU.</em>`;
+                displayBox.style.borderLeftColor = "#dc3545";
+            }
+        }
+
+        // TỰ ĐỘNG BẮT SỰ KIỆN KHI KEYCLOAK CHUYỂN HƯỚNG VỀ (Sau khi đăng ký)
+        window.onload = () => {
+            autoFillProduct();
+            
+            // Nếu trên URL có chứa mã code trả về từ Keycloak
+            if (window.location.search.includes('code=')) {
+                // Xóa query parameter trên thanh URL cho gọn gàng
+                window.history.replaceState({}, document.title, window.location.pathname);
+                
+                // Hiện thông báo chúc mừng
+                const resultBox = document.getElementById('result');
+                resultBox.innerText = "🎉 BẠN ĐÃ ĐĂNG KÝ THÀNH CÔNG TRÊN KEYCLOAK!\n\nHệ thống đã lưu thông tin của bạn. Bây giờ hãy nhập Username và Password bạn vừa tạo để Đăng Nhập nhé!";
+                resultBox.style.color = "#28a745";
+            }
+        };
+
+        // ==========================================
+        // ĐĂNG KÝ (CHUYỂN HƯỚNG SANG KEYCLOAK)
+        // ==========================================
+        function register() {
+            // Lấy chính xác địa chỉ web hiện tại để Keycloak biết đường gọi về
+            const currentUrl = encodeURIComponent(window.location.href.split('?')[0]);
+            
+            // Endpoint đăng ký chuẩn của OpenID Connect
+            const registerUrl = `http://localhost:8080/realms/laptop-store/protocol/openid-connect/registrations?client_id=kong-gateway&response_type=code&scope=openid&redirect_uri=${currentUrl}`;
+            
+            // Chuyển hướng trình duyệt
+            window.location.href = registerUrl;
+        }
+
+        // ==========================================
+        // CẬP NHẬT HỒ SƠ SAU KHI ĐĂNG NHẬP
+        // ==========================================
+        async function updateProfile() {
+            const resultBox = document.getElementById('result');
+            if (!accessToken) return resultBox.innerText = "⚠️ LỖI: Bạn cần đăng nhập trước!";
+
+            const profileData = {
+                phone: document.getElementById('userPhone').value,
+                city: document.getElementById('userCity').value
+            };
+
+            try {
+                resultBox.innerText = "⏳ Đang gửi thông tin xuống Backend để mã hóa và lưu DB...";
+                const response = await fetch("http://localhost:8000/api/v1/profile", {
+                    method: 'POST', 
+                    headers: { 
+                        'Authorization': 'Bearer ' + accessToken, 
+                        'Content-Type': 'application/json' 
+                    }, 
+                    body: JSON.stringify(profileData)
+                });
+                
+                const data = await response.json();
+                if (response.ok) {
+                    resultBox.innerText = `HTTP Status: 200\\n\\n✅ ${data.message}`;
+                    document.getElementById('profileCard').style.display = 'none'; // Ẩn form đi sau khi lưu xong
+                } else {
+                    resultBox.innerText = `HTTP Status: ${response.status}\\n\\n❌ Lỗi: ${data.error}`;
+                }
+            } catch (err) { resultBox.innerText = "❌ Lỗi: " + err.message; }
+        }
+
+        // ==========================================
+        // 1. GỌI LÊN KEYCLOAK LẤY TOKEN
+        // ==========================================
+        async function login() {
+            const user = document.getElementById('username').value;
+            const pass = document.getElementById('password').value;
+            const resultBox = document.getElementById('result');
+            resultBox.style.color = "#61dafb"; // Đặt lại màu chữ mặc định
+
+            const keycloakUrl = "http://localhost:8080/realms/laptop-store/protocol/openid-connect/token";
+            const params = new URLSearchParams();
+            params.append('client_id', 'kong-gateway'); 
+            params.append('grant_type', 'password');
+            params.append('username', user);
+            params.append('password', pass);
+
+            try {
+                resultBox.innerText = "⏳ Đang xin Keycloak cấp thẻ JWT...";
+                const response = await fetch(keycloakUrl, {
+                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params
+                });
+
+                const data = await response.json();
+                if (data.access_token) {
+                    accessToken = data.access_token;
+                    refreshToken = data.refresh_token; 
+                    
+                    // 1. Giải mã JWT để kiểm tra Role
+                    const payload = JSON.parse(atob(accessToken.split('.')[1]));
+                    
+                    // 2. Lưu Token vào localStorage để trang Admin có thể sử dụng lại
+                    localStorage.setItem('admin_token', accessToken);
+
+                    // Cập nhật Dashboard Security
+                    const expTime = new Date(payload.exp * 1000);
+                    document.getElementById('dash-user').innerText = payload.preferred_username || payload.email || 'User';
+                    document.getElementById('dash-session').innerText = payload.sid;
+                    document.getElementById('dash-exp').innerText = expTime.toLocaleTimeString('vi-VN');
+
+                    // 3. Kiểm tra Role 'admin' và chuyển hướng
+                    const roles = payload.realm_access ? payload.realm_access.roles : [];
+                    
+                    if (roles.includes('admin')) {
+                        resultBox.innerText = "🚀 CHÀO ADMIN! Đang chuyển hướng sang hệ thống quản trị...";
+                        resultBox.style.color = "#2ed573";
+                        
+                        // Đợi 1.5 giây để User kịp nhìn thông báo rồi chuyển hướng
+                        setTimeout(() => {
+                            window.location.href = "/admin/"; 
+                        }, 1500);
+                    } else {
+                    resultBox.innerText = "🎉 ĐĂNG NHẬP THÀNH CÔNG!\n\nNhìn lên bảng Security Dashboard ở trên, Keycloak đã tự động tạo Session ID.";
+                    document.getElementById('profileCard').style.display = 'block'; // Hiện form cập nhật hồ sơ sau khi đăng nhập thành công
+                    }
+                } 
+                
+                else {
+                    resultBox.innerText = "❌ ĐĂNG NHẬP THẤT BẠI!\n" + JSON.stringify(data, null, 2);
+                }
+            } 
+            
+            catch (err) { resultBox.innerText = "❌ Lỗi gọi Keycloak: " + err.message; }
+        }
+
+        function showJWT() {
+            const resultBox = document.getElementById('result');
+            resultBox.style.color = "#61dafb";
+            if (!accessToken) resultBox.innerText = "⚠️ LỖI: Bạn chưa có JWT. Hãy đăng nhập trước!";
+            else resultBox.innerText = "🎫 CHUỖI JWT CỦA BẠN LÀ:\n\n" + accessToken;
+        }
+
+        async function logout() {
+            const resultBox = document.getElementById('result');
+            resultBox.style.color = "#61dafb";
+            if (!refreshToken) return resultBox.innerText = "⚠️ BẠN CHƯA ĐĂNG NHẬP!";
+
+            const logoutUrl = "http://localhost:8080/realms/laptop-store/protocol/openid-connect/logout";
+            const params = new URLSearchParams();
+            params.append('client_id', 'kong-gateway');
+            params.append('refresh_token', refreshToken);
+
+            try {
+                resultBox.innerText = "⏳ Đang gửi yêu cầu hủy Session lên Keycloak...";
+                await fetch(logoutUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params });
+                accessToken = ""; refreshToken = "";
+                document.getElementById('dash-user').innerText = "Chưa đăng nhập";
+                document.getElementById('dash-session').innerText = "Trống";
+                document.getElementById('dash-exp').innerText = "Trống";
+                resultBox.innerText = "✅ ĐÃ ĐĂNG XUẤT THÀNH CÔNG!";
+            } catch (err) { resultBox.innerText = "❌ Lỗi Đăng xuất: " + err.message; }
+        }
+
+        // ==========================================
+        // 2 & 3. GỌI API KONG GATEWAY
+        // ==========================================
+        async function createOrder() {
+            const resultBox = document.getElementById('result');
+            resultBox.style.color = "#61dafb";
+            if (!accessToken) return resultBox.innerText = "⚠️ LỖI: Cần Đăng nhập lấy Token trước!";
+            if (!currentItemName) return resultBox.innerText = "⚠️ LỖI: Mã SKU không hợp lệ, không thể đặt hàng!";
+
+            const orderData = {
+                sku: document.getElementById('laptopSku').value.toUpperCase(),
+                item_name: currentItemName,
+                unit_price: currentUnitPrice,
+                qty: document.getElementById('laptopQty').value,
+                customer_phone: document.getElementById('customerPhone').value
+            };
+
+            try {
+                resultBox.innerText = `⏳ Đang gọi POST Kong Gateway (8000)...\n\nDữ liệu gửi đi:\n${JSON.stringify(orderData, null, 2)}`;
+                const response = await fetch("http://localhost:8000/api/v1/orders", {
+                    method: 'POST', headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body: JSON.stringify(orderData)
+                });
+                const data = await response.json();
+                resultBox.innerText = `HTTP Status: ${response.status}\n\n` + JSON.stringify(data, null, 2);
+            } catch (err) { resultBox.innerText = "❌ Lỗi: " + err.message; }
+        }
+
+        async function fetchOrders() {
+            const resultBox = document.getElementById('result');
+            resultBox.style.color = "#61dafb";
+            if (!accessToken) return resultBox.innerText = "⚠️ LỖI: Cần Đăng nhập lấy Token trước!";
+
+            try {
+                resultBox.innerText = "⏳ Đang gọi GET Kong Gateway (8000)...";
+                const response = await fetch("http://localhost:8000/api/v1/orders", {
+                    method: 'GET', headers: { 'Authorization': 'Bearer ' + accessToken }
+                });
+                const data = await response.json();
+                resultBox.innerText = `HTTP Status: ${response.status}\n\n` + JSON.stringify(data, null, 2);
+            } catch (err) { resultBox.innerText = "❌ Lỗi: " + err.message; }
+        }
+
+        async function cancelOrder() {
+            const orderId = document.getElementById('actionOrderId').value;
+            const resultBox = document.getElementById('result');
+            resultBox.style.color = "#61dafb";
+
+            if (!accessToken) return resultBox.innerText = "⚠️ LỖI: Cần Đăng nhập lấy Token trước!";
+            if (!orderId) return resultBox.innerText = "⚠️ LỖI: Vui lòng nhập ID đơn hàng!";
+
+            try {
+                resultBox.innerText = `⏳ Đang gọi PATCH qua Kong Gateway để hủy đơn #${orderId}...`;
+                
+                const response = await fetch(`http://localhost:8000/api/v1/orders/${orderId}/cancel`, {
+                    method: 'PATCH', 
+                    headers: { 'Authorization': 'Bearer ' + accessToken }
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    resultBox.innerText = `HTTP Status: ${response.status}\n\n✅ ${data.message}\n\nĐang tải lại danh sách...`;
+                    // Tự động load lại danh sách sau khi hủy thành công
+                    setTimeout(() => { fetchOrders(); }, 1500); 
+                } else {
+                    resultBox.style.color = "#ff4757"; // Đổi màu đỏ báo lỗi
+                    resultBox.innerText = `HTTP Status: ${response.status}\n\n❌ ${data.error}`;
+                }
+            } catch (err) { 
+                resultBox.innerText = "❌ Lỗi: " + err.message; 
+            }
+        }
+
+        async function confirmDelivery() {
+            const orderId = document.getElementById('actionOrderId').value;
+            const resultBox = document.getElementById('result');
+            resultBox.style.color = "#61dafb";
+
+            if (!accessToken) return resultBox.innerText = "⚠️ LỖI: Cần Đăng nhập lấy Token trước!";
+            if (!orderId) return resultBox.innerText = "⚠️ LỖI: Vui lòng nhập ID đơn hàng!";
+
+            try {
+                resultBox.innerText = `⏳ Đang gọi PATCH qua Kong Gateway để xác nhận giao đơn #${orderId}...`;
+                
+                const response = await fetch(`http://localhost:8000/api/v1/orders/${orderId}/deliver`, {
+                    method: 'PATCH', 
+                    headers: { 'Authorization': 'Bearer ' + accessToken }
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    resultBox.innerText = `HTTP Status: ${response.status}\n\n✅ ${data.message}\n\nĐang tải lại danh sách...`;
+                    setTimeout(() => { fetchOrders(); }, 1500); 
+                } else {
+                    resultBox.style.color = "#ff4757";
+                    resultBox.innerText = `HTTP Status: ${response.status}\n\n❌ ${data.error}`;
+                }
+            } catch (err) { 
+                resultBox.innerText = "❌ Lỗi: " + err.message; 
+            }
+        }
+    </script>
+</body>
+</html>

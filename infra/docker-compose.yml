@@ -1,40 +1,158 @@
-version: '3.8'
-
 services:
+  # 1. API GATEWAY
   kong:
-    image: kong:3.4
+    image: kong:3.4-ubuntu
+    container_name: kong-api
     volumes:
-      - ./kong/kong.yml:/usr/local/kong/declarative/kong.yml
+      - ../gateway/kong.yml:/usr/local/kong/declarative/kong.yml
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /usr/local/kong/declarative/kong.yml
-      KONG_PROXY_ACCESS_LOG: /dev/stdout
-      KONG_ADMIN_ACCESS_LOG: /dev/stdout
       KONG_PROXY_LISTEN: 0.0.0.0:8000
       KONG_ADMIN_LISTEN: 0.0.0.0:8001
     ports:
       - "8000:8000"
       - "8001:8001"
     networks:
-      - api-net
+      - capstone-net
 
+  #2. FRONTEND WEB
+  frontend-web:
+    build: ../frontend
+    container_name: frontend-web
+    ports:
+      - "4000:80"
+    networks:
+      - capstone-net
+
+
+  # 3. BACKEND SERVICE
+  order-service:
+    build: ../services/order-service
+    container_name: backend-order-api
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      DATABASE_URL: ${DATABASE_URL}
+      VAULT_ADDR: "http://vault-server:8200"
+      #VAULT_TOKEN: "my-root-token"
+      #WEBHOOK_SECRET: "day-la-key-sieu-bao-mat-moi" # Dùng cho HMAC
+    depends_on:
+      - vault
+    volumes:
+      - ../certs:/app/certs
+      - vault-token-share:/app/vault-token-share
+    networks:
+      - capstone-net
+
+  # 4. IDENTITY PROVIDER (KEYCLOAK)
   keycloak:
     image: quay.io/keycloak/keycloak:22.0
-    command: start-dev
+    container_name: keycloak-idp
+    command: start-dev --import-realm 
     environment:
+      KC_HOSTNAME: localhost
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
     ports:
       - "8080:8080"
+    volumes:
+      - ./realm-full.json:/opt/keycloak/data/import/realm.json
     networks:
-      - api-net
+      - capstone-net
 
-  order-service:
-    build: ./services/order-service
+  # 4. SECRET MANAGEMENT (VAULT)
+  consul:
+    image: hashicorp/consul:1.15
+    container_name: consul-storage
+    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0
     environment:
-      PORT: 3000
+      - CONSUL_BIND_INTERFACE=eth0
+    volumes:
+      - consul-data:/consul/data
+    ports:
+      - "8500:8500"
     networks:
-      - api-net
+      - capstone-net
+
+  # 5. VAULT - Két sắt (Chạy chế độ Server Mode)
+  vault:
+    image: hashicorp/vault:1.13
+    container_name: vault-server
+    user: root
+    ports:
+      - "8200:8200"
+    volumes:
+      - ./vault-config.hcl:/vault/config/vault-config.hcl:ro
+    # Chạy lệnh server với file cấu hình thay vì dev mode
+    command: vault server -config=/vault/config/vault-config.hcl
+    cap_add:
+      - IPC_LOCK
+    depends_on:
+      - consul
+    networks:
+      - capstone-net
+
+  # 6. VAULT AGENT - Ông thư ký (Giữ nguyên, chỉ cần khớp networks)
+  vault-agent:
+    image: hashicorp/vault:1.13
+    container_name: vault-agent
+    user: root
+    volumes:
+      - ./vault-agent.hcl:/etc/vault/agent.hcl
+      - vault-token-share:/app/vault-token-share
+      - ./.vault-ids:/etc/vault
+    command: sh -c "mkdir -p /app/vault-token-share && vault agent -config=/etc/vault/agent.hcl"
+    depends_on:
+      - vault
+    networks:
+      - capstone-net
+
+    # ==========================================
+  # ELK STACK (LOGGING & MONITORING)
+  # ==========================================
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false # Tắt xác thực để demo cho nhanh
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m" # Giới hạn RAM
+    ports:
+      - "9200:9200"
+    volumes:
+      - elastic-data:/usr/share/elasticsearch/data
+    networks:
+      - capstone-net  
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.1
+    container_name: logstash
+    volumes:
+      - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+    ports:
+      - "5044:5044"
+    depends_on:
+      - elasticsearch
+    networks:
+      - capstone-net
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.1
+    container_name: kibana
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - capstone-net
 
 networks:
-  api-net:
+  capstone-net:
+    driver: bridge
+
+volumes:
+  consul-data:       # Lưu trữ dữ liệu Consul xuống ổ cứng
+  vault-token-share: # Chia sẻ Token giữa Agent và Backend
+  elastic-data:      # Lưu trữ dữ liệu Elasticsearch xuống ổ cứng

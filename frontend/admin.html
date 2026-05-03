@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard - Full Access Control</title>
+    <style>
+        :root {
+            --primary: #ff4757;
+            --secondary: #2f3542;
+            --accent: #1e90ff;
+            --bg: #0f0f1a;
+            --card-bg: #1e1e2f;
+            --text: #ffffff;
+        }
+
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background-color: var(--bg); 
+            color: var(--text); 
+            margin: 0; 
+            display: flex;
+        }
+
+        /* Sidebar & Layout */
+        .sidebar { width: 250px; background: var(--secondary); height: 100vh; padding: 20px; position: fixed; }
+        .main-content { margin-left: 290px; padding: 40px; width: calc(100% - 330px); }
+
+        .card { 
+            background: var(--card-bg); 
+            padding: 25px; 
+            border-radius: 12px; 
+            margin-bottom: 25px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            border-left: 5px solid var(--primary);
+        }
+
+        h1, h2, h3 { margin-top: 0; }
+        .status-badge { padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+        .bg-success { background: #2ed573; color: #000; }
+        .bg-warning { background: #ffa502; color: #000; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 15px; text-align: left; border-bottom: 1px solid #333; }
+        th { color: var(--primary); text-transform: uppercase; font-size: 13px; }
+
+        tr:hover { background: rgba(255, 255, 255, 0.05); cursor: pointer; transition: 0.2s; }
+
+        button { 
+            background: var(--accent); 
+            color: white; 
+            border: none; 
+            padding: 10px 20px; 
+            border-radius: 6px; 
+            cursor: pointer; 
+            font-weight: bold;
+        }
+        button:hover { opacity: 0.8; }
+
+        .raw-data { color: #2ed573; font-family: 'Courier New', Courier, monospace; font-weight: bold; }
+        #user-details { display: none; animation: fadeIn 0.5s; }
+
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <h2>🛡️ Admin Panel</h2>
+        <hr style="border: 0.5px solid #444">
+        <p>Phiên làm việc: <br><span id="admin-name" style="color:var(--accent)">Đang tải...</span></p>
+        <button onclick="logout()" style="background:var(--primary); width:100%">Đăng xuất</button>
+    </div>
+
+    <div class="main-content">
+        <h1>Bảng Điều Khiển Hệ Thống (Full Access)</h1>
+
+        <!-- Danh sách Users -->
+        <div class="card">
+            <h3>👥 Quản lý người dùng</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID (UUID)</th>
+                        <th>Họ và tên</th>
+                        <th>Email</th>
+                        <th>Hành động</th>
+                    </tr>
+                </thead>
+                <tbody id="user-list">
+                    <!-- Data load từ API -->
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Chi tiết User & Đơn hàng -->
+        <div id="user-details" class="card" style="border-left-color: var(--accent);">
+            <h3 id="detail-title">📦 Thông tin chi tiết: </h3>
+            <div id="user-info-summary" style="margin-bottom: 20px; padding: 15px; background: #252545; border-radius: 8px;">
+                <!-- Thông tin Profile User -->
+            </div>
+
+            <h4>Lịch sử đơn hàng (Dữ liệu thô - decrypted)</h4>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Mã đơn</th>
+                        <th>Sản phẩm</th>
+                        <th>Số lượng</th>
+                        <th>SĐT Khách (Cleartext)</th>
+                        <th>Trạng thái</th>
+                    </tr>
+                </thead>
+                <tbody id="order-list">
+                    <!-- Data load từ API -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // 1. Kiểm tra quyền Admin ngay khi vừa mở trang
+        window.onload = () => {
+            const token = localStorage.getItem('admin_token');
+
+            if (!token) {
+                alert("🚨 Yêu cầu đăng nhập!");
+                window.location.href = "/";
+                return;
+            }
+
+            try {
+                // Giải mã JWT để lấy Role
+                const payload = JSON.parse(atob(token.split('.')[1]));
+                const roles = payload.realm_access ? payload.realm_access.roles : [];
+
+                // Nếu không có role 'admin', đuổi về trang chủ ngay
+                if (!roles.includes('admin')) {
+                    alert("🚫 Truy cập bị từ chối! Bạn không có quyền Quản trị.");
+                    window.location.href = "/";
+                    return;
+                }
+
+                // Hiển thị tên Admin lên Sidebar
+                document.getElementById('admin-name').innerText = payload.preferred_username || "Administrator";
+                
+                // Mọi thứ OK thì mới load danh sách User
+                fetchUsers();
+
+            } catch (e) {
+                console.error("Lỗi xác thực:", e);
+                window.location.href = "/";
+            }
+        };
+
+        // 2. Lấy danh sách User (Những người đã có đơn hàng trong DB)
+        async function fetchUsers() {
+            const token = localStorage.getItem('admin_token');
+            try {
+                const res = await fetch("http://localhost:8000/api/v1/admin/users", {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+
+                if (res.status === 403) {
+                    alert("Lỗi 403: Backend xác nhận bạn không phải Admin!");
+                    return;
+                }
+
+                const users = await res.json();
+                const tbody = document.getElementById('user-list');
+                
+                if (users.length === 0) {
+                    tbody.innerHTML = "<tr><td colspan='4'>Chưa có dữ liệu người dùng nào.</td></tr>";
+                    return;
+                }
+
+                tbody.innerHTML = users.map(u => `
+                    <tr>
+                        <td style="font-size:11px; color:#aaa;">${u.id}</td>
+                        <td><strong>${u.full_name}</strong></td>
+                        <td>${u.email}</td>
+                        <td><button onclick="viewUserDetails('${u.id}', '${u.full_name}', '${u.email}')">Xem Chi Tiết</button></td>
+                    </tr>
+                `).join('');
+            } catch (err) {
+                console.error("Lỗi fetchUsers:", err);
+            }
+        }
+
+        // 3. Lấy chi tiết đơn hàng (Dữ liệu thật từ bảng orders bạn chụp)
+        async function viewUserDetails(userId, name, email) {
+            const token = localStorage.getItem('admin_token');
+            document.getElementById('user-details').style.display = 'block';
+            document.getElementById('detail-title').innerText = `📦 Chi tiết khách hàng: ${name}`;
+            
+            document.getElementById('user-info-summary').innerHTML = `
+                <p>👤 <strong>Họ tên:</strong> ${name}</p>
+                <p>📧 <strong>Email:</strong> ${email}</p>
+                <p>🆔 <strong>User ID:</strong> <span class="raw-data">${userId}</span></p>
+            `;
+
+            try {
+                const res = await fetch(`http://localhost:8000/api/v1/admin/orders/${userId}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const orders = await res.json();
+                const otbody = document.getElementById('order-list');
+                
+                if (orders.length === 0) {
+                    otbody.innerHTML = "<tr><td colspan='5'>Khách hàng này chưa có đơn hàng.</td></tr>";
+                    return;
+                }
+
+                otbody.innerHTML = orders.map(o => {
+                    const statusClass = o.payment_status === 'Paid' ? 'bg-success' : 'bg-warning';
+                    const displayStatus = o.payment_status || 'Unpaid';
+                    
+                    return `
+                        <tr>
+                            <td>#${o.id}</td>
+                            <td>${o.item_name} <br> <small style="color:#888">SKU: ${o.sku || 'N/A'}</small></td>
+                            <td>${o.qty}</td>
+                            <td class="raw-data" style="color:#2ed573;">${o.customer_phone}</td> 
+                            <td>
+                                <span id="badge-${o.id}" class="status-badge ${statusClass}">${displayStatus}</span>
+                                
+                                <!-- NÚT ĐỔI TRẠNG THÁI -->
+                                <button style="padding: 4px 8px; font-size: 11px; margin-left: 10px; background-color: #3742fa; border-radius: 4px;" 
+                                        onclick="togglePayment(event, '${o.id}', '${displayStatus}')">Đổi</button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+                
+                // Cuộn xuống để xem chi tiết
+                window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+            } catch (err) {
+                console.error("Lỗi fetchOrders:", err);
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('admin_token');
+            window.location.href = "/";
+        }
+
+        // 4. Hàm Đổi trạng thái Thanh toán (Paid/Unpaid)
+        async function togglePayment(event, orderId, currentStatus) {
+            const token = localStorage.getItem('admin_token');
+            const newStatus = currentStatus === 'Paid' ? 'Unpaid' : 'Paid'; // Đảo ngược trạng thái
+            
+            if (!confirm(`Bạn có chắc muốn đổi trạng thái đơn #${orderId} thành ${newStatus}?`)) return;
+
+            try {
+                const res = await fetch(`http://localhost:8000/api/v1/admin/orders/${orderId}/payment`, {
+                    method: 'PATCH',
+                    headers: { 
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ payment_status: newStatus }) // Gửi status mới xuống Backend
+                });
+
+                if (res.ok) {
+                    // Đổi màu và chữ ngay trên màn hình không cần F5
+                    const badge = document.getElementById(`badge-${orderId}`);
+                    badge.innerText = newStatus;
+                    badge.className = `status-badge ${newStatus === 'Paid' ? 'bg-success' : 'bg-warning'}`;
+                    
+                    // Cập nhật lại nút bấm để lần sau click sẽ đảo ngược lại
+                    event.target.setAttribute('onclick', `togglePayment(event, '${orderId}', '${newStatus}')`);
+                } else {
+                    alert("❌ Lỗi: Không thể cập nhật trạng thái từ Server!");
+                }
+            } catch (err) {
+                console.error("Lỗi cập nhật:", err);
+                alert("Lỗi kết nối đến Server!");
+            }
+        }
+    </script>
+</body>
+</html>
