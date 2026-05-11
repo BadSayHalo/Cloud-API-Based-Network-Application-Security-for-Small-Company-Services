@@ -7,7 +7,12 @@ const axios = require('axios'); // <-- Cần cài đặt: npm install axios
 const { send } = require('process');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({
+    limit: '5mb', 
+    verify: (req, res, buf) => {
+        req.rawBody = buf; // Bắt lấy raw body trước khi Express biến nó thành JSON
+    }
+})); // Tăng giới hạn kích thước body để tránh lỗi khi gửi nhiều dữ liệu
 
 // ==========================================
 // A. CẤU HÌNH VAULT & BIẾN TOÀN CỤC
@@ -123,13 +128,19 @@ function verifyHMACSignature(req, res, next) {
     const timestamp = req.headers['x-webhook-timestamp'];
     const secret = process.env.WEBHOOK_SECRET;
 
+    if (!secret) return res.status(500).json({ error: "Webhook Secret is missing!" });
+
     const now = Math.floor(Date.now() / 1000);
     if (!timestamp || Math.abs(now - timestamp) > 300) {
         return res.status(401).json({ error: "Request expired (Replay Attack detected)" });
     }
 
+    // SỬA ĐIỂM 2: Dùng req.rawBody thay vì JSON.stringify
+    // Nếu request không có body thì fallback về chuỗi rỗng
+    const rawBodyString = req.rawBody ? req.rawBody.toString('utf8') : '';
+    
     const hmac = crypto.createHmac('sha256', secret)
-                       .update(timestamp + JSON.stringify(req.body))
+                       .update(timestamp + rawBodyString)
                        .digest('hex');
 
     if (signature && crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(signature))) {
@@ -142,17 +153,62 @@ function verifyHMACSignature(req, res, next) {
 // ==========================================
 // E. API ROUTES
 // ==========================================
+// 1. Tạo Agent để gọi HTTPS nội bộ (Dùng certs đã có)
+const internalHttpsAgent = new https.Agent({
+    key: fs.readFileSync('./certs/node.key'),
+    cert: fs.readFileSync('./certs/node.crt'),
+    ca: fs.readFileSync('./certs/ca.crt'),
+    checkServerIdentity: () => undefined, // Bỏ qua hostname check vì chúng ta gọi bằng tên service trong Docker
+    rejectUnauthorized: true // Bắt buộc kiểm tra chứng chỉ của Product Service
+});
+
 app.post('/api/v1/orders', verifyUserContext, async (req, res) => {
     try {
-        const { sku, item_name, unit_price, qty, customer_phone } = req.body;
-        const encryptedPhone = encrypt(customer_phone || "Không có SĐT");
+        // CHÚ Ý: Cố tình KHÔNG LẤY unit_price và item_name từ req.body nữa!
+        const { sku, qty, customer_phone } = req.body;
         
+        // 🛡️ BẢO MẬT 2: Data Validation 
+        if (!sku) {
+            return res.status(400).json({ error: "Thiếu mã sản phẩm (SKU)!" });
+        }
+        if (Number(qty) <= 0) {
+            sendLog("CRITICAL", "BUSINESS_LOGIC_ATTACK", `User ${req.user.id} truyền số lượng âm!`, req);
+            return res.status(400).json({ error: "Số lượng phải > 0!" });
+        }
+        
+        // 🛡️ BẢO MẬT GIAO TIẾP (East-West Traffic): Lấy giá chuẩn từ Product Service
+        let productData;
+        try {
+            const productRes = await axios.get(
+                `https://backend-product-api:3001/api/v1/products/${sku}`,
+                { httpsAgent: internalHttpsAgent }
+            );
+            productData = productRes.data.data; // Lấy được name và price thật từ Cloud DB của Product
+        } catch (err) {
+            return res.status(404).json({ error: "Sản phẩm không tồn tại trong hệ thống!" });
+        }
+
+        // BƯỚC QUAN TRỌNG: Gọi Product Service để TRỪ KHO
+        try {
+            await axios.patch(
+                `https://backend-product-api:3001/api/v1/products/${sku}/reduce-stock`,
+                { qty: qty || 1 },
+                { httpsAgent: internalHttpsAgent }
+            );
+        } catch (err) {
+            return res.status(400).json({ error: "Số lượng tồn kho không đủ để đặt hàng!" });
+        }
+
+        // Tạo đơn hàng với TÊN và GIÁ lấy từ Product Service (Bảo mật 100%)
+        const encryptedPhone = encrypt(customer_phone || "Không có SĐT");
         const query = `
             INSERT INTO orders (user_id, sku, item_name, qty, unit_price, customer_phone, order_date, status)
             VALUES ($1, $2, $3, $4, $5, $6, CURRENT_DATE, 'Pending') RETURNING id
         `;
-        const values = [req.user.id, sku, item_name, qty || 1, unit_price, encryptedPhone];
+        // Truyền productData.name và productData.price vào thay vì lấy từ Frontend
+        const values = [req.user.id, sku, productData.name, qty || 1, productData.price, encryptedPhone];
         const { rows } = await pool.query(query, values);
+        
         res.status(201).json({ message: "Tạo đơn hàng thành công", order_id: rows[0].id });
         sendLog("INFO", "ORDER_CREATED", `Người dùng ${req.user.id} đã tạo đơn hàng #${rows[0].id}.`, req);
     } catch (err) {
@@ -169,6 +225,8 @@ app.get('/api/v1/orders', verifyUserContext, async (req, res) => {
             order_id: order.id, 
             sku: order.sku, 
             product: order.item_name,
+            qty: order.qty,
+            unit_price: order.unit_price,
             safe_phone: decrypt(order.customer_phone)?.replace(/.(?=.{4})/g, '*') || "N/A",
             status: order.status || 'Pending',
             payment_status: order.payment_status || 'Unpaid'
@@ -184,33 +242,41 @@ app.get('/api/v1/orders', verifyUserContext, async (req, res) => {
 // User tự hủy đơn hàng của chính mình
 app.patch('/api/v1/orders/:orderId/cancel', verifyUserContext, async (req, res) => {
     try {
-        // 1. CHỐNG BOLA: Lấy đơn hàng ra nhưng PHẢI kèm điều kiện user_id = req.user.id
-        const checkQuery = 'SELECT status FROM orders WHERE id = $1 AND user_id = $2';
+        // 1. CHỐNG BOLA: Phải Select thêm 'sku' và 'qty' để biết đường hoàn kho
+        const checkQuery = 'SELECT status, sku, qty FROM orders WHERE id = $1 AND user_id = $2';
         const { rows } = await pool.query(checkQuery, [req.params.orderId, req.user.id]);
         
         // 2. Kiểm tra tồn tại và quyền sở hữu
         if (rows.length === 0) {
-            sendLog("CRITICAL", "BOLA_ATTACK_ATTEMPT", `User ${req.user.id} cố gắng hủy đơn hàng ${req.params.orderId} không thuộc sở hữu!`, req);
-
-            return res.status(404).json({ 
-                error: "Không tìm thấy đơn hàng hoặc bạn không có quyền hủy đơn của người khác!" 
-            });
+            sendLog("CRITICAL", "BOLA_ATTACK_ATTEMPT", `User ${req.user.id} cố gắng hủy đơn ${req.params.orderId} của người khác!`, req);
+            return res.status(404).json({ error: "Không tìm thấy đơn hàng hoặc bạn không có quyền hủy!" });
         }
         
-        // 3. Kiểm tra điều kiện trạng thái (Chỉ được hủy khi Pending hoặc Unpaid)
-        if (rows[0].status !== 'Pending' && rows[0].status !== 'Unpaid') {
-            return res.status(400).json({ 
-                error: `Không thể hủy! Đơn hàng đang ở trạng thái: ${rows[0].status}` 
-            });
+        const order = rows[0];
+
+        // 3. Kiểm tra điều kiện trạng thái 
+        if (order.status !== 'Pending' && order.status !== 'Unpaid') {
+            return res.status(400).json({ error: `Không thể hủy! Đơn hàng đang ở trạng thái: ${order.status}` });
         }
 
-        // 4. Tiến hành hủy
+        // BƯỚC QUAN TRỌNG: Gọi Product Service để CỘNG LẠI KHO
+        try {
+            await axios.patch(
+                `https://backend-product-api:3001/api/v1/products/${order.sku}/add-stock`,
+                { qty: order.qty },
+                { httpsAgent: internalHttpsAgent }
+            );
+        } catch (err) {
+            console.error("Lỗi hoàn kho:", err.message);
+            // Vẫn tiếp tục hủy đơn dù lỗi hoàn kho (Hoặc bạn có thể return lỗi tùy business logic)
+        }
+
+        // 4. Tiến hành cập nhật trạng thái hủy
         const updateQuery = "UPDATE orders SET status = 'Cancelled' WHERE id = $1";
         await pool.query(updateQuery, [req.params.orderId]);
         
-        sendLog("INFO", "ORDER_CANCELLED", `Đơn hàng ${req.params.orderId} đã được hủy thành công.`, req);
-
-        res.json({ message: `Đã hủy thành công đơn hàng #${req.params.orderId}` });
+        sendLog("INFO", "ORDER_CANCELLED", `Đơn hàng ${req.params.orderId} đã hủy và hoàn lại ${order.qty} sản phẩm.`, req);
+        res.json({ message: `Đã hủy thành công đơn hàng #${req.params.orderId} và hoàn kho.` });
     } catch (err) {
         sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
         res.status(500).json({ error: "Lỗi hệ thống: " + err.message });
@@ -244,6 +310,37 @@ app.patch('/api/v1/orders/:orderId/deliver', verifyUserContext, async (req, res)
         
         sendLog("INFO", "ORDER_DELIVERED", `Đơn hàng ${req.params.orderId} đã được giao thành công.`, req);
         res.json({ message: `Cảm ơn bạn! Đơn hàng #${req.params.orderId} đã được giao thành công.` });
+    } catch (err) {
+        sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
+        res.status(500).json({ error: "Lỗi hệ thống: " + err.message });
+    }
+});
+
+app.post('/api/v1/profile', verifyUserContext, async (req, res) => {
+    try {
+        const { phone, city } = req.body;
+        
+        // 1. Kiểm tra đầu vào
+        if (!phone || !city) {
+            return res.status(400).json({ error: "Vui lòng điền đủ Số điện thoại và Thành phố!" });
+        }
+
+        // 2. Mã hóa Số điện thoại bằng AES-256-GCM
+        const encryptedPhone = encrypt(phone);
+
+        // 3. Cập nhật vào bảng users (Giả định bạn đã tạo bảng users)
+        // Nếu DB của bạn chưa có các cột này, bạn có thể comment lệnh SQL lại để test flow mã hóa trước
+        const query = `
+            UPDATE users 
+            SET phone = $1, city = $2 
+            WHERE id = $3
+        `;
+        await pool.query(query, [encryptedPhone, city, req.user.id]);
+        
+        // 4. Ghi log cảnh báo giám sát
+        sendLog("INFO", "PROFILE_UPDATED", `User ${req.user.id} đã cập nhật hồ sơ (Đã mã hóa AES)`, req);
+        
+        res.status(200).json({ message: "Đã lưu và mã hóa thông tin hồ sơ an toàn!" });
     } catch (err) {
         sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
         res.status(500).json({ error: "Lỗi hệ thống: " + err.message });
@@ -298,6 +395,14 @@ app.patch('/api/v1/admin/orders/:orderId/payment', verifyUserContext, async (req
     if (!req.user.roles.includes('admin')) return res.status(403).json({ error: "Forbidden" });
     try {
         const { payment_status } = req.body;
+        // 🛡️ BẢO MẬT 3: Chống Mass Assignment / Enum Manipulation
+        // Ngăn chặn admin (hoặc hacker chiếm quyền) truyền vào một trạng thái chế bậy bạ như "HACKED" hoặc "DELETED"
+        const allowedStatuses = ['Paid', 'Unpaid', 'Refunded'];
+        if (!allowedStatuses.includes(payment_status)) {
+            sendLog("WARN", "INVALID_DATA_ATTACK", `Thử nghiệm cập nhật trạng thái ảo: ${payment_status}`, req);
+            return res.status(400).json({ error: "Trạng thái thanh toán không hợp lệ!" });
+        }
+
         // Nếu admin duyệt "Paid", tự động chuyển status thành "Processing"
         if (payment_status === 'Paid') {
             await pool.query("UPDATE orders SET payment_status = 'Paid', status = 'Processing' WHERE id = $1", [req.params.orderId]);
@@ -306,6 +411,23 @@ app.patch('/api/v1/admin/orders/:orderId/payment', verifyUserContext, async (req
         }
         res.json({ message: "Cập nhật thành công!" });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// API Webhook dành riêng cho Đối tác (Ví dụ: Cổng thanh toán gọi về)
+// KHÔNG dùng verifyUserContext ở đây, mà dùng verifyHMACSignature
+app.post('/api/v1/webhook/payment-success', verifyHMACSignature, async (req, res) => {
+    try {
+        const { order_id, transaction_id } = req.body;
+        
+        // Cập nhật trạng thái đơn hàng thành Paid
+        await pool.query("UPDATE orders SET payment_status = 'Paid', status = 'Processing' WHERE id = $1", [order_id]);
+        
+        sendLog("INFO", "WEBHOOK_PAYMENT_SUCCESS", `Webhook xác nhận thanh toán cho đơn ${order_id} (Txn: ${transaction_id})`, req);
+        res.status(200).json({ message: "Webhook processed successfully" });
+    } catch (err) {
+        sendLog("ERROR", "WEBHOOK_ERROR", err.message, req);
+        res.status(500).json({ error: "Internal Server Error" });
+    }
 });
 
 // ==========================================

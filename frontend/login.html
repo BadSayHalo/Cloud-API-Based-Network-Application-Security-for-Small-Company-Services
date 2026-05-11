@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Đăng Nhập</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .card { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); width: 400px; text-align: center; }
+        h2 { color: #007bff; border-bottom: 2px solid #007bff; padding-bottom: 10px; margin-bottom: 20px; }
+        input { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
+        button { width: 100%; padding: 12px; margin: 10px 0; color: white; border: none; font-weight: bold; border-radius: 5px; cursor: pointer; transition: 0.3s; }
+        .btn-login { background-color: #007bff; } .btn-login:hover { background-color: #0056b3; }
+        .btn-register { background-color: #17a2b8; } .btn-register:hover { background-color: #138496; }
+        #message { margin-top: 15px; font-size: 14px; color: #dc3545; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🔒 ĐĂNG NHẬP HỆ THỐNG</h2>
+        <input type="text" id="username" placeholder="Tên đăng nhập" value="buithihoa">
+        <input type="password" id="password" placeholder="Mật khẩu" value="123456">
+        
+        <button class="btn-login" onclick="login()">Đăng Nhập</button>
+        <button class="btn-register" onclick="register()">Tạo Tài Khoản Mới</button>
+        
+        <div id="message"></div>
+    </div>
+
+    <script>
+        // 1. Kiểm tra nếu đã đăng nhập thì đá thẳng vào trang chủ (URL sạch)
+        window.onload = () => {
+            if (localStorage.getItem('accessToken')) {
+                window.location.href = "/"; // Sửa thành "/" thay vì "index.html"
+            }
+            // Bắt sự kiện đăng ký thành công từ Keycloak
+            if (window.location.search.includes('code=')) {
+                window.history.replaceState({}, document.title, window.location.pathname);
+                document.getElementById('message').innerText = "🎉 Đăng ký thành công! Hãy đăng nhập.";
+                document.getElementById('message').style.color = "#28a745";
+            }
+        };
+
+        // 2. Hàm xử lý đăng nhập
+        async function login() {
+            const user = document.getElementById('username').value;
+            const pass = document.getElementById('password').value;
+            const msgBox = document.getElementById('message');
+            msgBox.style.color = "#007bff";
+            msgBox.innerText = "⏳ Đang kết nối Keycloak...";
+
+            const keycloakUrl = "http://localhost:8000/realms/laptop-store/protocol/openid-connect/token";
+            const params = new URLSearchParams();
+            params.append('client_id', 'kong-gateway'); 
+            params.append('grant_type', 'password');
+            params.append('username', user);
+            params.append('password', pass);
+
+            try {
+                const response = await fetch(keycloakUrl, {
+                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params
+                });
+
+                const data = await response.json();
+                if (data.access_token) {
+                    // LƯU TOKEN VÀO LOCAL STORAGE
+                    localStorage.setItem('accessToken', data.access_token);
+                    localStorage.setItem('refreshToken', data.refresh_token);
+                    
+                    const payload = JSON.parse(atob(data.access_token.split('.')[1]));
+                    const roles = payload.realm_access ? payload.realm_access.roles : [];
+                    
+                    msgBox.style.color = "#28a745";
+                    msgBox.innerText = "✅ Đăng nhập thành công! Đang chuyển hướng...";
+                    
+                    // SỬA CHỖ NÀY: Dùng "/" thay vì "index.html"
+                    setTimeout(() => {
+                        if (roles.includes('admin')) window.location.href = "/admin";
+                        else window.location.href = "/"; 
+                    }, 1000);
+                } else {
+                    msgBox.style.color = "#dc3545";
+                    msgBox.innerText = "❌ Sai thông tin đăng nhập!";
+                }
+            } catch (err) {
+                msgBox.style.color = "#dc3545";
+                msgBox.innerText = "❌ Lỗi kết nối: " + err.message;
+            }
+        }
+
+        function register() {
+            const currentUrl = encodeURIComponent(window.location.href.split('?')[0]);
+            const registerUrl = `http://localhost:8000/realms/laptop-store/protocol/openid-connect/registrations?client_id=kong-gateway&response_type=code&scope=openid&redirect_uri=${currentUrl}`;
+            window.location.href = registerUrl;
+        }
+    </script>
+</body>
+</html>
