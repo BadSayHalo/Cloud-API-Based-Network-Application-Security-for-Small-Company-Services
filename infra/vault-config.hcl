@@ -9,8 +9,11 @@ storage "consul" {
 
 # Cấu hình Listener (Cổng giao tiếp)
 listener "tcp" {
-  address     = "0.0.0.0:8200"
-  tls_disable = 1 # Chạy HTTP nội bộ cho đơn giản, SSL đã có Kong lo
+  address       = "0.0.0.0:8200"
+  tls_disable = 0
+  tls_cert_file = "/vault/certs/vault-bundle.crt"
+  tls_key_file  = "/vault/certs/vault.key"
+  tls_ca_file   = "/vault/certs/ca.crt"
 }
 
 # Vô hiệu hóa mlock (nếu Docker không cấp quyền RAM)

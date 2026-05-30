@@ -27,12 +27,10 @@
     </div>
 
     <script>
-        // 1. Kiểm tra nếu đã đăng nhập thì đá thẳng vào trang chủ (URL sạch)
         window.onload = () => {
             if (localStorage.getItem('accessToken')) {
-                window.location.href = "/"; // Sửa thành "/" thay vì "index.html"
+                window.location.href = "/"; 
             }
-            // Bắt sự kiện đăng ký thành công từ Keycloak
             if (window.location.search.includes('code=')) {
                 window.history.replaceState({}, document.title, window.location.pathname);
                 document.getElementById('message').innerText = "🎉 Đăng ký thành công! Hãy đăng nhập.";
@@ -40,7 +38,6 @@
             }
         };
 
-        // 2. Hàm xử lý đăng nhập
         async function login() {
             const user = document.getElementById('username').value;
             const pass = document.getElementById('password').value;
@@ -48,7 +45,8 @@
             msgBox.style.color = "#007bff";
             msgBox.innerText = "⏳ Đang kết nối Keycloak...";
 
-            const keycloakUrl = "http://localhost:8000/realms/laptop-store/protocol/openid-connect/token";
+            // ĐỔI SANG HTTPS 8443
+            const keycloakUrl = "https://localhost:8443/realms/laptop-store/protocol/openid-connect/token";
             const params = new URLSearchParams();
             params.append('client_id', 'kong-gateway'); 
             params.append('grant_type', 'password');
@@ -62,7 +60,6 @@
 
                 const data = await response.json();
                 if (data.access_token) {
-                    // LƯU TOKEN VÀO LOCAL STORAGE
                     localStorage.setItem('accessToken', data.access_token);
                     localStorage.setItem('refreshToken', data.refresh_token);
                     
@@ -72,7 +69,6 @@
                     msgBox.style.color = "#28a745";
                     msgBox.innerText = "✅ Đăng nhập thành công! Đang chuyển hướng...";
                     
-                    // SỬA CHỖ NÀY: Dùng "/" thay vì "index.html"
                     setTimeout(() => {
                         if (roles.includes('admin')) window.location.href = "/admin";
                         else window.location.href = "/"; 
@@ -89,7 +85,8 @@
 
         function register() {
             const currentUrl = encodeURIComponent(window.location.href.split('?')[0]);
-            const registerUrl = `http://localhost:8000/realms/laptop-store/protocol/openid-connect/registrations?client_id=kong-gateway&response_type=code&scope=openid&redirect_uri=${currentUrl}`;
+            // ĐỔI SANG HTTPS 8443
+            const registerUrl = `https://localhost:8443/realms/laptop-store/protocol/openid-connect/registrations?client_id=kong-gateway&response_type=code&scope=openid&redirect_uri=${currentUrl}`;
             window.location.href = registerUrl;
         }
     </script>

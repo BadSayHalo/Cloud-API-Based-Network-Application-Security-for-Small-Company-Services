@@ -9,10 +9,15 @@ services:
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /usr/local/kong/declarative/kong.yml
-      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      # CẬP NHẬT 1: Báo cho Kong biết phải lắng nghe thêm cổng 8443 có bọc SSL
+      KONG_PROXY_LISTEN: 0.0.0.0:8000, 0.0.0.0:8443 ssl
       KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      # CẬP NHẬT 2: Trỏ thẳng chứng chỉ ECC (mTLS) của Kong vào để nó làm SSL Termination
+      KONG_SSL_CERT: /certs/kong.crt
+      KONG_SSL_CERT_KEY: /certs/kong.key
     ports:
       - "8000:8000"
+      - "8443:8443" # CẬP NHẬT 3: Mở cổng HTTPS ra ngoài máy Host
       - "127.0.0.1:8001:8001"
     networks:
       - capstone-net
@@ -41,7 +46,7 @@ services:
       - "3000"
     environment:
       PORT: 3000
-      VAULT_ADDR: "http://vault-server:8200"
+      VAULT_ADDR: "https://vault-server:8200"
       #VAULT_TOKEN: "my-root-token"
       #WEBHOOK_SECRET: "day-la-key-sieu-bao-mat-moi" # Dùng cho HMAC
     depends_on:
@@ -59,7 +64,7 @@ services:
       - "3001"
     environment:
       PORT: 3001
-      VAULT_ADDR: "http://vault-server:8200"
+      VAULT_ADDR: "https://vault-server:8200"
       #DATABASE_URL: ${DATABASE_URL} # Nếu dùng Vault thì có thể bỏ dòng này trong Compose
     volumes:
       - ../certs:/app/certs
@@ -73,14 +78,18 @@ services:
   # 7. MOCK PAYMENT GATEWAY (GIẢ LẬP VNPAY)
   # ==========================================
   mock-vnpay:
-    build: ../services/mock-vnpay # Thư mục chứa code mock-vnpay.js và Dockerfile
+    build: ../services/mock-vnpay
     container_name: mock-vnpay
     ports:
-      - "4001:4001" # Mở cổng 4001 ra ngoài để trình duyệt có thể redirect tới
+      - "4001:4001"
     environment:
       PORT: 4001
-      # Nếu code mock-vnpay của bạn có dùng biến môi trường để đọc Secret Webhook thì thêm vào đây:
-      WEBHOOK_SECRET: "day-la-key-sieu-bao-mat-moi"
+      WEBHOOK_SECRET: ${VNPAY_WEBHOOK_SECRET}
+      KONG_USERNAME: ${KONG_VNPAY_USERNAME}
+      KONG_SECRET: ${KONG_VNPAY_SECRET}
+      KONG_WEBHOOK_URL: ${KONG_WEBHOOK_URL}
+    volumes:
+      - ../certs:/app/certs:ro
     networks:
       - capstone-net
 
@@ -91,14 +100,14 @@ services:
     command: start-dev --import-realm 
     environment:
       KC_PROXY: edge
-      # THAY ĐỔI 2: Ép các đường link Keycloak tạo ra phải dùng cổng 8000 của Kong
-      KC_HOSTNAME_URL: http://localhost:8000
+      # CẬP NHẬT 1: Ép các đường link Keycloak tạo ra (như link Login) phải dùng HTTPS cổng 8443 của Kong
+      KC_HOSTNAME_URL: https://localhost:8443
       KC_HOSTNAME_ADMIN_URL: http://localhost:8080
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      # CẬP NHẬT 2: Bảo mật tài khoản Admin bằng cách đọc từ file .env
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USER}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
     ports:
-    #  - "8080:8080"
-       - "127.0.0.1:8080:8080" # Chỉ expose cổng 8080 ra localhost để tránh xung đột với Kong
+       - "127.0.0.1:8080:8080" # Chỉ expose cổng 8080 ra localhost
     volumes:
       - ./realm-full.json:/opt/keycloak/data/import/realm.json
     networks:
@@ -129,6 +138,7 @@ services:
       - "8200"
     volumes:
       - ./vault-config.hcl:/vault/config/vault-config.hcl:ro
+      - ../certs:/vault/certs:ro
     # Chạy lệnh server với file cấu hình thay vì dev mode
     command: vault server -config=/vault/config/vault-config.hcl
     cap_add:
@@ -144,9 +154,14 @@ services:
     container_name: vault-agent
     user: root
     volumes:
-      - ./vault-agent.hcl:/etc/vault/agent.hcl
+      # 1. Mount file cấu hình Agent
+      - ./vault-agent.hcl:/etc/vault/agent.hcl:ro
+      # 2. Mount thư mục chứa ID (Đổi đường dẫn để tránh xung đột)
+      - ./.vault-ids:/etc/vault-ids:ro
+      # 3. Mount thư mục chứng chỉ để Agent xác minh HTTPS của Vault Server
+      - ../certs:/vault/certs:ro
+      # 4. Thư mục chia sẻ Token với Node.js
       - vault-token-share:/app/vault-token-share
-      - ./.vault-ids:/etc/vault
     command: sh -c "mkdir -p /app/vault-token-share && vault agent -config=/etc/vault/agent.hcl"
     depends_on:
       - vault

@@ -2,8 +2,8 @@ auto_auth {
   method "approle" {
     mount_path = "auth/approle"
     config = {
-      role_id_file_path   = "/etc/vault/role-id"
-      secret_id_file_path = "/etc/vault/secret-id"
+      role_id_file_path   = "/etc/vault-ids/role-id"
+      secret_id_file_path = "/etc/vault-ids/secret-id"
       remove_secret_id_file_after_reading = false
     }
   }
@@ -13,7 +13,12 @@ auto_auth {
     }
   }
 }
+
+# CẬP NHẬT PHẦN NÀY ĐỂ KẾT NỐI HTTPS
 vault {
-  address = "http://vault-server:8200"
+  address = "https://vault-server:8200"
+  ca_cert = "/vault/certs/ca.crt"
+  tls_server_name = "localhost"
 }
+
 exit_after_auth = false

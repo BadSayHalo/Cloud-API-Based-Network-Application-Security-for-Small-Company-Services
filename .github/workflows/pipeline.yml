@@ -3,9 +3,9 @@ name: CI/CD Pipeline
 # Kích hoạt khi có code mới đẩy lên nhánh main
 on:
   push:
-    branches: [ "main", "FullSystem" ] # <--- Sửa dòng này
+    branches: [ "main", "FullSystem", "Final" ] # <--- Sửa dòng này
   pull_request:
-    branches: [ "main", "FullSystem" ] # <--- Sửa cả dòng này nữa
+    branches: [ "main", "FullSystem", "Final" ] # <--- Sửa cả dòng này nữa
 
 jobs:
   build-and-security-scan:

@@ -3,85 +3,108 @@ const { Pool } = require('pg');
 const https = require('https');
 const fs = require('fs');
 const crypto = require('crypto');
-const axios = require('axios'); // <-- Cần cài đặt: npm install axios
-const { send } = require('process');
+const axios = require('axios');
+const jwt = require('jsonwebtoken');
+const jwksClient = require('jwks-rsa');
 
 const app = express();
 app.use(express.json({
     limit: '5mb', 
     verify: (req, res, buf) => {
-        req.rawBody = buf; // Bắt lấy raw body trước khi Express biến nó thành JSON
+        req.rawBody = buf; 
     }
-})); // Tăng giới hạn kích thước body để tránh lỗi khi gửi nhiều dữ liệu
+})); 
 
 // ==========================================
-// A. CẤU HÌNH VAULT & BIẾN TOÀN CỤC
+// A. CẤU HÌNH BIẾN TOÀN CỤC & HTTPS AGENT CHO VAULT
 // ==========================================
-const VAULT_ADDR = process.env.VAULT_ADDR || 'http://vault-server:8200';
-const VAULT_TOKEN = process.env.VAULT_TOKEN || 'my-root-token';
-let ENCRYPTION_KEY = ""; // Sẽ được nạp từ Vault 
+const VAULT_ADDR = process.env.VAULT_ADDR || 'https://vault-server:8200'; // Đổi thành HTTPS
+let ENCRYPTION_KEY = ""; 
 const IV_LENGTH = 16;
+let pool; 
+let internalHttpsAgent; // Sẽ khởi tạo sau khi có chứng chỉ động
+
+// Agent chuyên dụng để Node.js gọi vào Vault (Vì Vault đang xài mTLS tĩnh)
+const vaultHttpsAgent = new https.Agent({
+    ca: fs.readFileSync('./certs/ca.crt'), // Root CA để tin tưởng Vault Server
+    checkServerIdentity: () => undefined 
+});
 
 // ==========================================
-// B. HÀM LẤY SECRETS TỪ HASHICORP VAULT 
+// B. CÁC HÀM GIAO TIẾP VỚI VAULT (SECRETS & PKI)
 // ==========================================
-async function getSecretsFromVault() {
+async function getVaultToken() {
     const tokenPath = '/app/vault-token-share/.vault-token';
-    
-    // Đợi tối đa 10 giây cho đến khi Agent ghi xong file token
     for (let i = 0; i < 10; i++) {
-        if (fs.existsSync(tokenPath)) break;
+        if (fs.existsSync(tokenPath)) {
+            return fs.readFileSync(tokenPath, 'utf8').trim();
+        }
         console.log("⏳ Dang doi Vault Agent cap Token...");
         await new Promise(res => setTimeout(res, 1000));
     }
+    throw new Error("Timeout: Khong nhan duoc Token tu Vault Agent!");
+}
 
+async function getSecretsFromVault(token) {
     try {
-        const VAULT_TOKEN = fs.readFileSync(tokenPath, 'utf8').trim();
-        
         const response = await axios.get(`${VAULT_ADDR}/v1/secret/data/order-service`, {
-            headers: { 'X-Vault-Token': VAULT_TOKEN }
+            headers: { 'X-Vault-Token': token },
+            httpsAgent: vaultHttpsAgent
         });
-
-        // TRÍCH XUẤT ĐÚNG TÊN BIẾN TRONG VAULT
         const vaultData = response.data.data.data;
-        
         return {
-            key: vaultData.ENCRYPTION_KEY, // Map lai cho dung voi bootstrap
+            key: vaultData.ENCRYPTION_KEY, 
             dbUrl: vaultData.DATABASE_URL,
             webhookSecret: vaultData.WEBHOOK_SECRET
         };
     } catch (error) {
         console.error("❌ [VAULT] Loi lay secret:", error.message);
-        // Fallback tra ve object rong thay vi undefined de tranh crash
         return { key: null, dbUrl: null, webhookSecret: null };
     }
 }
 
+async function getDynamicCertFromVault(token) {
+    try {
+        console.log("🔐 Dang xin cap chung chi mTLS (ECC) tu Vault RA...");
+        const response = await axios.post(`${VAULT_ADDR}/v1/pki/issue/microservices`, {
+            common_name: "backend-order-api",
+            alt_names: "localhost",
+            ip_sans: "127.0.0.1",
+            ttl: "24h"
+        }, {
+            headers: { 'X-Vault-Token': token },
+            httpsAgent: vaultHttpsAgent
+        });
+        
+        return {
+            cert: response.data.data.certificate,
+            key: response.data.data.private_key,
+            dynamic_ca: response.data.data.issuing_ca
+        };
+    } catch (error) {
+        console.error("❌ [VAULT PKI] Loi xin chung chi:", error.message);
+        throw error;
+    }
+}
+
 // ==========================================
-// HÀM GỬI LOG SANG ELK (LOGSTASH)
+// C. LOGGING, MÃ HÓA & XÁC THỰC (Giữ nguyên logic của bạn)
 // ==========================================
 async function sendLog(level, action, message, req = null) {
     const logData = {
         timestamp: new Date().toISOString(),
         service: "order-service",
-        level: level,       // INFO, WARN, ERROR, CRITICAL
-        action: action,     // Ví dụ: CREATE_ORDER, CANCEL_ORDER, BOLA_ATTACK
+        level: level,       
+        action: action,     
         message: message,
         user_id: req && req.user ? req.user.id : "anonymous",
         ip_address: req ? (req.headers['x-forwarded-for'] || req.socket.remoteAddress) : "N/A"
     };
-
     try {
-        // Gửi qua HTTP input của Logstash (Cổng 5044)
         await axios.post('http://logstash:5044', logData);
-    } catch (err) {
-        console.error("⚠️ Không thể kết nối tới ELK Stack!");
-    }
+    } catch (err) {}
 }
 
-// ==========================================
-// C. CÁC HÀM MÃ HÓA (AES-256-GCM) 
-// ==========================================
 function encrypt(text) {
     if (!text || !ENCRYPTION_KEY) return null;
     let iv = crypto.randomBytes(IV_LENGTH);
@@ -107,20 +130,30 @@ function decrypt(text) {
     } catch (e) { return "Lỗi giải mã"; }
 }
 
-// ==========================================
-// D. XÁC THỰC (JWT & HMAC)
-// ==========================================
+const client = jwksClient({
+  jwksUri: 'http://keycloak-idp:8080/realms/laptop-store/protocol/openid-connect/certs' 
+});
+
+function getKey(header, callback) {
+  client.getSigningKey(header.kid, function(err, key) {
+    var signingKey = key.publicKey || key.rsaPublicKey;
+    callback(null, signingKey);
+  });
+}
+
 function verifyUserContext(req, res, next) {
     const authHeader = req.headers['authorization'];
     if (!authHeader) return res.status(401).json({ error: "Missing Token" });
-    try {
-        const token = authHeader.split(' ')[1];
-        const payloadBase64 = token.split('.')[1];
-        const jwtData = JSON.parse(Buffer.from(payloadBase64, 'base64').toString('utf-8'));
-        req.user = { id: jwtData.sub, username: jwtData.preferred_username || 'unknown', 
-                    roles: jwtData.realm_access ? jwtData.realm_access.roles : [] };
+    const token = authHeader.split(' ')[1];
+    jwt.verify(token, getKey, { algorithms: ['ES256'] }, function(err, decoded) {
+        if (err) return res.status(401).json({ error: "Invalid or Expired Token" });
+        req.user = { 
+            id: decoded.sub, 
+            username: decoded.preferred_username || 'unknown', 
+            roles: decoded.realm_access?.roles || [] 
+        };
         next();
-    } catch (error) { return res.status(401).json({ error: "Invalid Token" }); }
+    });
 }
 
 function verifyHMACSignature(req, res, next) {
@@ -132,16 +165,11 @@ function verifyHMACSignature(req, res, next) {
 
     const now = Math.floor(Date.now() / 1000);
     if (!timestamp || Math.abs(now - timestamp) > 300) {
-        return res.status(401).json({ error: "Request expired (Replay Attack detected)" });
+        return res.status(401).json({ error: "Request expired" });
     }
 
-    // SỬA ĐIỂM 2: Dùng req.rawBody thay vì JSON.stringify
-    // Nếu request không có body thì fallback về chuỗi rỗng
     const rawBodyString = req.rawBody ? req.rawBody.toString('utf8') : '';
-    
-    const hmac = crypto.createHmac('sha256', secret)
-                       .update(timestamp + rawBodyString)
-                       .digest('hex');
+    const hmac = crypto.createHmac('sha256', secret).update(timestamp + rawBodyString).digest('hex');
 
     if (signature && crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(signature))) {
         next();
@@ -151,17 +179,8 @@ function verifyHMACSignature(req, res, next) {
 }
 
 // ==========================================
-// E. API ROUTES
+// D. API ROUTES 
 // ==========================================
-// 1. Tạo Agent để gọi HTTPS nội bộ (Dùng certs đã có)
-const internalHttpsAgent = new https.Agent({
-    key: fs.readFileSync('./certs/node.key'),
-    cert: fs.readFileSync('./certs/node.crt'),
-    ca: fs.readFileSync('./certs/ca.crt'),
-    checkServerIdentity: () => undefined, // Bỏ qua hostname check vì chúng ta gọi bằng tên service trong Docker
-    rejectUnauthorized: true // Bắt buộc kiểm tra chứng chỉ của Product Service
-});
-
 app.post('/api/v1/orders', verifyUserContext, async (req, res) => {
     try {
         // CHÚ Ý: Cố tình KHÔNG LẤY unit_price và item_name từ req.body nữa!
@@ -171,7 +190,15 @@ app.post('/api/v1/orders', verifyUserContext, async (req, res) => {
         if (!sku) {
             return res.status(400).json({ error: "Thiếu mã sản phẩm (SKU)!" });
         }
-        if (Number(qty) <= 0) {
+
+        const qtyNum = Number(qty);
+
+        if (!Number.isInteger(qtyNum)) {
+            sendLog("WARN", "INVALID_INPUT", `User ${req.user.id} truyền số lượng không phải số nguyên: ${qty}`, req);
+            return res.status(400).json({ error: "Số lượng mua phải là một số nguyên!" });
+        }
+
+        if (qtyNum <= 0) {
             sendLog("CRITICAL", "BUSINESS_LOGIC_ATTACK", `User ${req.user.id} truyền số lượng âm!`, req);
             return res.status(400).json({ error: "Số lượng phải > 0!" });
         }
@@ -431,41 +458,71 @@ app.post('/api/v1/webhook/payment-success', verifyHMACSignature, async (req, res
 });
 
 // ==========================================
-// F. KHỞI ĐỘNG HỆ THỐNG (STARTUP SEQUENCE)
+// E. KHỞI ĐỘNG HỆ THỐNG (BỘ NÃO ZERO-TRUST)
 // ==========================================
-let pool; // Khai báo biến toàn cục nhưng chưa gán giá trị
-
 async function bootstrap() {
-    const secrets = await getSecretsFromVault();
+    try {
+        // 1. Chờ lấy Token từ Thư ký Agent
+        const VAULT_TOKEN = await getVaultToken();
 
-    if (!secrets || !secrets.key || !secrets.webhookSecret) {
-        console.error("❌ KHONG THE KHOI DONG: Thieu Encryption Key tu Vault!");
-        process.exit(1); 
+        // 2. Lấy DB URL & Secret Key
+        const secrets = await getSecretsFromVault(VAULT_TOKEN);
+        if (!secrets.key) {
+            console.error("❌ KHONG THE KHOI DONG: Thieu Encryption Key tu Vault!");
+            process.exit(1); 
+        }
+        ENCRYPTION_KEY = secrets.key;
+        process.env.WEBHOOK_SECRET = secrets.webhookSecret;
+
+        // 3. Lấy Chứng chỉ mTLS động từ Vault PKI
+        const certs = await getDynamicCertFromVault(VAULT_TOKEN);
+
+        // 4. Cấu hình Agent nội bộ (Dùng để Order gọi sang Product)
+        internalHttpsAgent = new https.Agent({
+            key: certs.key,         // Private Key động
+            cert: certs.cert,       // Chứng chỉ động
+            ca: [certs.dynamic_ca], // Trust CA động của Vault
+            checkServerIdentity: () => undefined, 
+            rejectUnauthorized: true 
+        });
+
+        // 5. Cấu hình HTTPS Server (Dùng để Kong gọi vào Order)
+        const options = {
+            key: certs.key,
+            cert: certs.cert,
+            // ĐIỂM SÁNG KIẾN TRÚC: Nạp cả CÂY NIỀM TIN
+            ca: [
+                fs.readFileSync('./certs/ca.crt'),      // Chấp nhận Root CA
+                fs.readFileSync('./certs/int-ca.crt'),  // Chấp nhận Kong (Vì Kong xài cert tĩnh)
+                certs.dynamic_ca                        // Chấp nhận các Service khác (Xài cert động)
+            ],
+            requestCert: true,
+            rejectUnauthorized: true
+        };
+
+        // 6. Kết nối Database
+        pool = new Pool({ 
+            connectionString: secrets.dbUrl, 
+            ssl: { 
+                rejectUnauthorized: true,    
+                ca: fs.readFileSync('./certs/neon-root-ca.pem').toString() 
+            }
+        });
+
+        // 7. Mở cổng
+        https.createServer(options, app).listen(process.env.PORT || 3000, '0.0.0.0', () => {
+            console.log('============================================');
+            console.log('🔒 Order Service đã khởi động (Pure ECC)!');
+            console.log('🔑 Đã nạp Encryption Key & Webhook Secret.');
+            console.log('📜 Đã lấy chứng chỉ mTLS động từ Vault.');
+            console.log('🛡️ Server đang lắng nghe mTLS trên cổng 3000.');
+            console.log('============================================');
+        });
+
+    } catch (err) {
+        console.error("❌ Fatal Error trong qua trinh Boot:", err);
+        process.exit(1);
     }
-
-    ENCRYPTION_KEY = secrets.key;
-    process.env.WEBHOOK_SECRET = secrets.webhookSecret; // Đặt biến môi trường cho HMAC
-    // 1. Cấu hình HTTPS (Đọc chứng chỉ mTLS)
-    // Đảm bảo thư mục ./certs có đủ 3 file này
-    const options = {
-        key: fs.readFileSync('./certs/node.key'),
-        cert: fs.readFileSync('./certs/node.crt'),
-        ca: [fs.readFileSync('./certs/ca.crt')],
-        requestCert: true,
-        rejectUnauthorized: true
-    };
-
-    // 2. Khởi tạo Pool với DB URL từ Vault
-    pool = new Pool({ 
-        connectionString: secrets.dbUrl, 
-        ssl: { rejectUnauthorized: false } 
-    });
-
-    // 3. Bật Server HTTPS
-    https.createServer(options, app).listen(process.env.PORT || 3000, '0.0.0.0', () => {
-        console.log('🔒 Order Service đã "sống" và lấy mọi thứ từ Vault!');
-        console.log("🚀 Order Service da san sang voi Token tu Agent!");
-    });
 }
 
 bootstrap();

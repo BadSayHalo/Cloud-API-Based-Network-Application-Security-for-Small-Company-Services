@@ -119,9 +119,9 @@
     </div>
 
     <script>
-        // 1. Kiểm tra quyền Admin ngay khi vừa mở trang
         window.onload = () => {
-            const token = localStorage.getItem('admin_token');
+            // FIX LỖI: Lấy đúng key 'accessToken' thay vì 'admin_token'
+            const token = localStorage.getItem('accessToken');
 
             if (!token) {
                 alert("🚨 Yêu cầu đăng nhập!");
@@ -130,21 +130,16 @@
             }
 
             try {
-                // Giải mã JWT để lấy Role
                 const payload = JSON.parse(atob(token.split('.')[1]));
                 const roles = payload.realm_access ? payload.realm_access.roles : [];
 
-                // Nếu không có role 'admin', đuổi về trang chủ ngay
                 if (!roles.includes('admin')) {
                     alert("🚫 Truy cập bị từ chối! Bạn không có quyền Quản trị.");
                     window.location.href = "/";
                     return;
                 }
 
-                // Hiển thị tên Admin lên Sidebar
                 document.getElementById('admin-name').innerText = payload.preferred_username || "Administrator";
-                
-                // Mọi thứ OK thì mới load danh sách User
                 fetchUsers();
 
             } catch (e) {
@@ -153,11 +148,12 @@
             }
         };
 
-        // 2. Lấy danh sách User (Những người đã có đơn hàng trong DB)
         async function fetchUsers() {
-            const token = localStorage.getItem('admin_token');
+            // FIX LỖI
+            const token = localStorage.getItem('accessToken');
             try {
-                const res = await fetch("http://localhost:8000/api/v1/admin/users", {
+                // ĐỔI SANG HTTPS 8443
+                const res = await fetch("https://localhost:8443/api/v1/admin/users", {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
 
@@ -187,9 +183,9 @@
             }
         }
 
-        // 3. Lấy chi tiết đơn hàng (Dữ liệu thật từ bảng orders bạn chụp)
         async function viewUserDetails(userId, name, email) {
-            const token = localStorage.getItem('admin_token');
+            // FIX LỖI
+            const token = localStorage.getItem('accessToken');
             document.getElementById('user-details').style.display = 'block';
             document.getElementById('detail-title').innerText = `📦 Chi tiết khách hàng: ${name}`;
             
@@ -200,7 +196,8 @@
             `;
 
             try {
-                const res = await fetch(`http://localhost:8000/api/v1/admin/orders/${userId}`, {
+                // ĐỔI SANG HTTPS 8443
+                const res = await fetch(`https://localhost:8443/api/v1/admin/orders/${userId}`, {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
                 const orders = await res.json();
@@ -223,8 +220,6 @@
                             <td class="raw-data" style="color:#2ed573;">${o.customer_phone}</td> 
                             <td>
                                 <span id="badge-${o.id}" class="status-badge ${statusClass}">${displayStatus}</span>
-                                
-                                <!-- NÚT ĐỔI TRẠNG THÁI -->
                                 <button style="padding: 4px 8px; font-size: 11px; margin-left: 10px; background-color: #3742fa; border-radius: 4px;" 
                                         onclick="togglePayment(event, '${o.id}', '${displayStatus}')">Đổi</button>
                             </td>
@@ -232,7 +227,6 @@
                     `;
                 }).join('');
                 
-                // Cuộn xuống để xem chi tiết
                 window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
             } catch (err) {
                 console.error("Lỗi fetchOrders:", err);
@@ -240,34 +234,35 @@
         }
 
         function logout() {
-            localStorage.removeItem('admin_token');
+            // FIX LỖI
+            localStorage.removeItem('accessToken');
+            localStorage.removeItem('refreshToken');
             window.location.href = "/";
         }
 
-        // 4. Hàm Đổi trạng thái Thanh toán (Paid/Unpaid)
         async function togglePayment(event, orderId, currentStatus) {
-            const token = localStorage.getItem('admin_token');
-            const newStatus = currentStatus === 'Paid' ? 'Unpaid' : 'Paid'; // Đảo ngược trạng thái
+            // FIX LỖI
+            const token = localStorage.getItem('accessToken');
+            const newStatus = currentStatus === 'Paid' ? 'Unpaid' : 'Paid'; 
             
             if (!confirm(`Bạn có chắc muốn đổi trạng thái đơn #${orderId} thành ${newStatus}?`)) return;
 
             try {
-                const res = await fetch(`http://localhost:8000/api/v1/admin/orders/${orderId}/payment`, {
+                // ĐỔI SANG HTTPS 8443
+                const res = await fetch(`https://localhost:8443/api/v1/admin/orders/${orderId}/payment`, {
                     method: 'PATCH',
                     headers: { 
                         'Authorization': `Bearer ${token}`,
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ payment_status: newStatus }) // Gửi status mới xuống Backend
+                    body: JSON.stringify({ payment_status: newStatus })
                 });
 
                 if (res.ok) {
-                    // Đổi màu và chữ ngay trên màn hình không cần F5
                     const badge = document.getElementById(`badge-${orderId}`);
                     badge.innerText = newStatus;
                     badge.className = `status-badge ${newStatus === 'Paid' ? 'bg-success' : 'bg-warning'}`;
                     
-                    // Cập nhật lại nút bấm để lần sau click sẽ đảo ngược lại
                     event.target.setAttribute('onclick', `togglePayment(event, '${orderId}', '${newStatus}')`);
                 } else {
                     alert("❌ Lỗi: Không thể cập nhật trạng thái từ Server!");

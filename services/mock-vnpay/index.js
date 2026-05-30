@@ -1,5 +1,6 @@
-// File: mock-vnpay/index.js
 const express = require('express');
+const https = require('https');
+const fs = require('fs');
 const crypto = require('crypto');
 const axios = require('axios');
 const app = express();
@@ -8,16 +9,11 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ==========================================
-// THÔNG SỐ BẢO MẬT (Đã cập nhật theo Vault của bạn)
+// THÔNG SỐ BẢO MẬT (Lấy từ biến môi trường - Giả lập hệ thống của VNPay)
 // ==========================================
-// 1. SECRET CHO BACKEND (Dùng để Backend xác minh đây là VNPay thật)
-const WEBHOOK_SECRET = "super-secret-webhook-key"; 
-
-// 2. SECRET CHO KONG GATEWAY (Dùng để qua cổng bảo vệ ngoài cùng)
-const KONG_USERNAME = "client-id";
-const KONG_SECRET = "bi-mat-sieu-cap-vjp";
-
-// 3. ĐỊA CHỈ KONG GATEWAY (Gọi trong mạng nội bộ Docker)
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "super-secret-webhook-key"; 
+const KONG_USERNAME = process.env.KONG_USERNAME || "client-id";
+const KONG_SECRET = process.env.KONG_SECRET || "bi-mat-sieu-cap-vjp";
 const KONG_WEBHOOK_URL = process.env.KONG_WEBHOOK_URL || 'http://kong-api:8000/api/v1/webhook/payment-success';
 
 // ==========================================
@@ -41,7 +37,7 @@ app.get('/pay', (req, res) => {
         <body>
             <div class="card">
                 <h2>💳 CỔNG THANH TOÁN VNPAY</h2>
-                <p style="color: #666;">(Môi trường giả lập đồ án)</p>
+                <p style="color: #666;">(Môi trường giả lập có HTTPS)</p>
                 <hr>
                 <h3 style="margin-top: 20px;">Mã đơn hàng: <span style="color: #007bff;">#${orderId || 'Unknown'}</span></h3>
                 <h3>Số tiền: <span style="color: red;">${amount ? Number(amount).toLocaleString('vi-VN') : '5,000,000'} VNĐ</span></h3>
@@ -64,7 +60,6 @@ app.get('/pay', (req, res) => {
 app.post('/process', async (req, res) => {
     const { orderId, amount } = req.body;
 
-    // 1. Chuẩn bị dữ liệu Payload
     const payload = {
         order_id: orderId,
         transaction_id: `VNPay_${Date.now()}`,
@@ -74,20 +69,16 @@ app.post('/process', async (req, res) => {
 
     const rawBody = JSON.stringify(payload);
 
-    // ==========================================
-    // CỬA BẢO VỆ 1: TẠO CHỮ KÝ CHO KONG GATEWAY
-    // ==========================================
+    // 1. CHỮ KÝ KONG GATEWAY
     const dateStr = new Date().toUTCString(); 
     const method = "POST";
-    const path = "/api/v1/webhook/payment-success";
+    const path = "/api/v1/webhook/payment-success"; // Đường dẫn phải khớp với Route trên Kong
     
     const kongSigningString = `date: ${dateStr}\n${method} ${path} HTTP/1.1`;
     const kongSignature = crypto.createHmac('sha256', KONG_SECRET).update(kongSigningString).digest('base64');
     const kongAuthHeader = `hmac username="${KONG_USERNAME}", algorithm="hmac-sha256", headers="date request-line", signature="${kongSignature}"`;
 
-    // ==========================================
-    // CỬA BẢO VỆ 2: TẠO CHỮ KÝ CHO BACKEND
-    // ==========================================
+    // 2. CHỮ KÝ BACKEND (Chống Replay Attack & Thay đổi Payload)
     const timestamp = Math.floor(Date.now() / 1000).toString();
     const backendHmac = crypto.createHmac('sha256', WEBHOOK_SECRET)
                        .update(timestamp + rawBody)
@@ -96,18 +87,16 @@ app.post('/process', async (req, res) => {
     console.log(`[VNPay Sandbox] Đang bắn Webhook cho đơn hàng #${orderId}...`);
 
     try {
-        // Gắn tất cả các thẻ thông hành vào Headers và bắn qua Kong
         await axios.post(KONG_WEBHOOK_URL, payload, {
             headers: {
                 'Content-Type': 'application/json',
-                'Date': dateStr,                     // Thẻ cho Kong 
-                'Authorization': kongAuthHeader,     // Chữ ký cho Kong 
-                'x-webhook-timestamp': timestamp,    // Thẻ cho Backend
-                'x-webhook-signature': backendHmac   // Chữ ký cho Backend
+                'Date': dateStr,                     
+                'Authorization': kongAuthHeader,     
+                'x-webhook-timestamp': timestamp,    
+                'x-webhook-signature': backendHmac   
             }
         });
 
-        // Báo thành công cho người dùng
         res.send(`
             <div style="text-align: center; font-family: Arial; margin-top: 100px;">
                 <h1 style="color: #28a745;">🎉 THANH TOÁN THÀNH CÔNG!</h1>
@@ -124,6 +113,14 @@ app.post('/process', async (req, res) => {
     }
 });
 
-app.listen(4001, () => {
-    console.log("💰 Mock VNPay Service running on http://localhost:4001");
+// ==========================================
+// KHỞI ĐỘNG SERVER BẰNG HTTPS
+// ==========================================
+const options = {
+    key: fs.readFileSync('./certs/vnpay.key'),
+    cert: fs.readFileSync('./certs/vnpay.crt')
+};
+
+https.createServer(options, app).listen(4001, '0.0.0.0', () => {
+    console.log("💰 Mock VNPay Service running Securely on https://localhost:4001");
 });
