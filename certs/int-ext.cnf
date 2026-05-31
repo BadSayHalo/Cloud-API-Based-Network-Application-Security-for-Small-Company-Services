@@ -1,3 +1,0 @@
-[v3_inter]
-basicConstraints=critical,CA:TRUE,pathlen:0
-keyUsage=critical,keyCertSign,cRLSign

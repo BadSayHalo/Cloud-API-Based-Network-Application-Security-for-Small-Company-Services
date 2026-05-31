@@ -265,7 +265,7 @@
                     
                     event.target.setAttribute('onclick', `togglePayment(event, '${orderId}', '${newStatus}')`);
                 } else {
-                    alert("❌ Lỗi: Không thể cập nhật trạng thái từ Server!");
+                    alert("Lỗi: Không thể cập nhật trạng thái từ Server!");
                 }
             } catch (err) {
                 console.error("Lỗi cập nhật:", err);

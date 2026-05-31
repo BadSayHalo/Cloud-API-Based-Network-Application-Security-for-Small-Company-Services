@@ -58,32 +58,8 @@ async function getSecretsFromVault(token) {
             webhookSecret: vaultData.WEBHOOK_SECRET
         };
     } catch (error) {
-        console.error("❌ [VAULT] Loi lay secret:", error.message);
+        console.error("[VAULT] Loi lay secret:", error.message);
         return { key: null, dbUrl: null, webhookSecret: null };
-    }
-}
-
-async function getDynamicCertFromVault(token) {
-    try {
-        console.log("🔐 Dang xin cap chung chi mTLS (ECC) tu Vault RA...");
-        const response = await axios.post(`${VAULT_ADDR}/v1/pki/issue/microservices`, {
-            common_name: "backend-order-api",
-            alt_names: "localhost",
-            ip_sans: "127.0.0.1",
-            ttl: "24h"
-        }, {
-            headers: { 'X-Vault-Token': token },
-            httpsAgent: vaultHttpsAgent
-        });
-        
-        return {
-            cert: response.data.data.certificate,
-            key: response.data.data.private_key,
-            dynamic_ca: response.data.data.issuing_ca
-        };
-    } catch (error) {
-        console.error("❌ [VAULT PKI] Loi xin chung chi:", error.message);
-        throw error;
     }
 }
 
@@ -186,7 +162,7 @@ app.post('/api/v1/orders', verifyUserContext, async (req, res) => {
         // CHÚ Ý: Cố tình KHÔNG LẤY unit_price và item_name từ req.body nữa!
         const { sku, qty, customer_phone } = req.body;
         
-        // 🛡️ BẢO MẬT 2: Data Validation 
+        // BẢO MẬT 2: Data Validation 
         if (!sku) {
             return res.status(400).json({ error: "Thiếu mã sản phẩm (SKU)!" });
         }
@@ -203,7 +179,7 @@ app.post('/api/v1/orders', verifyUserContext, async (req, res) => {
             return res.status(400).json({ error: "Số lượng phải > 0!" });
         }
         
-        // 🛡️ BẢO MẬT GIAO TIẾP (East-West Traffic): Lấy giá chuẩn từ Product Service
+        //BẢO MẬT GIAO TIẾP (East-West Traffic): Lấy giá chuẩn từ Product Service
         let productData;
         try {
             const productRes = await axios.get(
@@ -458,49 +434,58 @@ app.post('/api/v1/webhook/payment-success', verifyHMACSignature, async (req, res
 });
 
 // ==========================================
-// E. KHỞI ĐỘNG HỆ THỐNG (BỘ NÃO ZERO-TRUST)
+// E. KHỞI ĐỘNG HỆ THỐNG (ORDER SERVICE)
 // ==========================================
 async function bootstrap() {
     try {
-        // 1. Chờ lấy Token từ Thư ký Agent
+        // 1. Chờ lấy Token từ Vault Agent
         const VAULT_TOKEN = await getVaultToken();
-
-        // 2. Lấy DB URL & Secret Key
+        
+        // 2. Lấy TOÀN BỘ Secrets (DB URL, Key, Webhook) từ Vault
         const secrets = await getSecretsFromVault(VAULT_TOKEN);
-        if (!secrets.key) {
-            console.error("❌ KHONG THE KHOI DONG: Thieu Encryption Key tu Vault!");
+        if (!secrets.dbUrl || !secrets.key) {
+            console.error("KHÔNG THỂ KHỞI ĐỘNG: Thiếu DB URL hoặc Encryption Key từ Vault!");
             process.exit(1); 
         }
+        
+        // Cấp phát Key cho toàn cục
         ENCRYPTION_KEY = secrets.key;
         process.env.WEBHOOK_SECRET = secrets.webhookSecret;
 
-        // 3. Lấy Chứng chỉ mTLS động từ Vault PKI
-        const certs = await getDynamicCertFromVault(VAULT_TOKEN);
+        // 3. Đứng chờ Vault Agent sinh file chứng chỉ ra ổ cứng
+        const bundlePath = './certs/order-bundle.json';
+        
+        while (!fs.existsSync(bundlePath)) {
+            console.log("⏳ Đang chờ Vault Agent cấp chứng chỉ (order-bundle.json)...");
+            await new Promise(res => setTimeout(res, 2000));
+        }
 
-        // 4. Cấu hình Agent nội bộ (Dùng để Order gọi sang Product)
+        // 4. Đọc chứng chỉ từ file JSON
+        const bundleData = JSON.parse(fs.readFileSync(bundlePath, 'utf8'));
+        const orderCert = bundleData.certificate;
+        const orderKey = bundleData.private_key;
+        const dynamicCa = bundleData.issuing_ca;
+
+        // 5. Cấu hình Internal Agent
         internalHttpsAgent = new https.Agent({
-            key: certs.key,         // Private Key động
-            cert: certs.cert,       // Chứng chỉ động
-            ca: [certs.dynamic_ca], // Trust CA động của Vault
+            key: orderKey,
+            cert: orderCert,
+            // Nạp cả Root CA, Int CA và CA động từ Vault vào
+            ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt'), dynamicCa ],
             checkServerIdentity: () => undefined, 
             rejectUnauthorized: true 
         });
 
-        // 5. Cấu hình HTTPS Server (Dùng để Kong gọi vào Order)
+        // 6. Cấu hình HTTPS Server
         const options = {
-            key: certs.key,
-            cert: certs.cert,
-            // ĐIỂM SÁNG KIẾN TRÚC: Nạp cả CÂY NIỀM TIN
-            ca: [
-                fs.readFileSync('./certs/ca.crt'),      // Chấp nhận Root CA
-                fs.readFileSync('./certs/int-ca.crt'),  // Chấp nhận Kong (Vì Kong xài cert tĩnh)
-                certs.dynamic_ca                        // Chấp nhận các Service khác (Xài cert động)
-            ],
+            key: orderKey,
+            cert: orderCert,
+            ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt') ],
             requestCert: true,
             rejectUnauthorized: true
         };
 
-        // 6. Kết nối Database
+        // 7. Kết nối DB Order
         pool = new Pool({ 
             connectionString: secrets.dbUrl, 
             ssl: { 
@@ -509,18 +494,17 @@ async function bootstrap() {
             }
         });
 
-        // 7. Mở cổng
-        https.createServer(options, app).listen(process.env.PORT || 3000, '0.0.0.0', () => {
+        // 8. Bật Server (Order Service chạy cổng 3000)
+        const PORT = process.env.PORT || 3000;
+        https.createServer(options, app).listen(PORT, '0.0.0.0', () => {
             console.log('============================================');
-            console.log('🔒 Order Service đã khởi động (Pure ECC)!');
-            console.log('🔑 Đã nạp Encryption Key & Webhook Secret.');
-            console.log('📜 Đã lấy chứng chỉ mTLS động từ Vault.');
-            console.log('🛡️ Server đang lắng nghe mTLS trên cổng 3000.');
+            console.log(`Order Service đã khởi động (Cổng ${PORT})`);
+            console.log('Đã nạp Encryption Key & Webhook Secret.');
             console.log('============================================');
         });
 
     } catch (err) {
-        console.error("❌ Fatal Error trong qua trinh Boot:", err);
+        console.error("Fatal Error:", err);
         process.exit(1);
     }
 }

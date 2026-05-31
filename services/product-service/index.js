@@ -29,7 +29,7 @@ async function getVaultToken() {
         if (fs.existsSync(tokenPath)) {
             return fs.readFileSync(tokenPath, 'utf8').trim();
         }
-        console.log("⏳ Dang doi Vault Agent cap Token cho Product Service...");
+        console.log("Dang doi Vault Agent cap Token cho Product Service...");
         await new Promise(res => setTimeout(res, 1000));
     }
     throw new Error("Timeout: Khong nhan duoc Token tu Vault Agent!");
@@ -43,32 +43,8 @@ async function getDbUrlFromVault(token) {
         });
         return response.data.data.data.DATABASE_URL;
     } catch (error) {
-        console.error("❌ [VAULT] Loi lay DB URL:", error.message);
+        console.error("[VAULT] Loi lay DB URL:", error.message);
         return null;
-    }
-}
-
-async function getDynamicCertFromVault(token) {
-    try {
-        console.log("🔐 Dang xin cap chung chi mTLS (ECC) tu Vault RA...");
-        const response = await axios.post(`${VAULT_ADDR}/v1/pki/issue/microservices`, {
-            common_name: "backend-product-api", // Tên định danh của Product Service
-            alt_names: "localhost",
-            ip_sans: "127.0.0.1",
-            ttl: "24h"
-        }, {
-            headers: { 'X-Vault-Token': token },
-            httpsAgent: vaultHttpsAgent
-        });
-        
-        return {
-            cert: response.data.data.certificate,
-            key: response.data.data.private_key,
-            dynamic_ca: response.data.data.issuing_ca
-        };
-    } catch (error) {
-        console.error("❌ [VAULT PKI] Loi xin chung chi:", error.message);
-        throw error;
     }
 }
 
@@ -132,19 +108,50 @@ app.patch('/api/v1/products/:sku/add-stock', requireInternalMTLS, async (req, re
 // ==========================================
 async function bootstrap() {
     try {
-        // 1. Lấy Token và DB URL
+        // 1. Chờ lấy Token từ Vault Agent
         const VAULT_TOKEN = await getVaultToken();
-        const dbUrl = await getDbUrlFromVault(VAULT_TOKEN);
         
+        // 2. Lấy DB URL từ Vault (Dùng đúng hàm getDbUrlFromVault của Product)
+        const dbUrl = await getDbUrlFromVault(VAULT_TOKEN);
         if (!dbUrl) {
-            console.error("❌ KHÔNG THỂ KHỞI ĐỘNG: Không lấy được DB URL từ Vault!");
+            console.error("KHÔNG THỂ KHỞI ĐỘNG: Không lấy được DB URL từ Vault!");
             process.exit(1); 
         }
 
-        // 2. Lấy chứng chỉ Động từ Vault PKI
-        const certs = await getDynamicCertFromVault(VAULT_TOKEN);
+        // 3. Đứng chờ Vault Agent sinh file chứng chỉ ra ổ cứng
+        const bundlePath = './certs/order-bundle.json';
+        
+        while (!fs.existsSync(bundlePath)) {
+            console.log("⏳ Đang chờ Vault Agent cấp chứng chỉ (order-bundle.json)...");
+            await new Promise(res => setTimeout(res, 2000));
+        }
 
-        // 3. Khởi tạo kết nối DB (Đã fix lỗi biến secrets)
+        // 4. Đọc chứng chỉ từ file JSON
+        const bundleData = JSON.parse(fs.readFileSync(bundlePath, 'utf8'));
+        const orderCert = bundleData.certificate;
+        const orderKey = bundleData.private_key;
+        const dynamicCa = bundleData.issuing_ca;
+
+        // 5. Cấu hình Internal Agent
+        internalHttpsAgent = new https.Agent({
+            key: orderKey,
+            cert: orderCert,
+            // Nạp cả Root CA, Int CA và CA động từ Vault vào
+            ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt'), dynamicCa ],
+            checkServerIdentity: () => undefined, 
+            rejectUnauthorized: true 
+        });
+
+        // 6. Cấu hình HTTPS Server
+        const options = {
+            key: orderKey,
+            cert: orderCert,
+            ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt') ],
+            requestCert: true,
+            rejectUnauthorized: true
+        };
+
+        // 7. Kết nối DB (Đã fix lỗi cú pháp { ... } ở đây)
         pool = new Pool({ 
             connectionString: dbUrl, 
             ssl: { 
@@ -153,30 +160,16 @@ async function bootstrap() {
             }
         });
 
-        // 4. Cấu hình HTTPS & Trust Store (Cây niềm tin)
-        const options = {
-            key: certs.key,
-            cert: certs.cert,
-            ca: [
-                fs.readFileSync('./certs/ca.crt'),      // Trust Root CA
-                fs.readFileSync('./certs/int-ca.crt'),  // Trust Kong Gateway (CA Tĩnh)
-                certs.dynamic_ca                        // Trust Order Service (CA Động)
-            ],
-            requestCert: true,
-            rejectUnauthorized: true 
-        };
-
-        // 5. Bật Server
+        // 8. Bật Server (Đảm bảo là cổng 3001)
         const PORT = process.env.PORT || 3001;
         https.createServer(options, app).listen(PORT, '0.0.0.0', () => {
             console.log('============================================');
-            console.log(`🔒 Product Service đã khởi động (Pure ECC) ở cổng ${PORT}`);
-            console.log(`📜 Đã lấy chứng chỉ mTLS động từ Vault.`);
-            console.log(`🚀 Đã kết nối Database thành công!`);
+            console.log(`Product Service đã khởi động (Cổng ${PORT})`);
             console.log('============================================');
         });
+
     } catch (err) {
-        console.error("❌ Fatal Error trong qua trinh Boot:", err);
+        console.error("Fatal Error:", err);
         process.exit(1);
     }
 }
@@ -191,7 +184,7 @@ function requireInternalMTLS(req, res, next) {
 
     // [BẢO MẬT CHIỀU SÂU]: Chỉ đích danh 'backend-order-api' mới được phép trừ/hoàn kho
     if (cert.subject.CN !== 'backend-order-api') {
-        console.warn(`⚠️ Cảnh báo bảo mật: Có kẻ gian (${cert.subject.CN}) định can thiệp kho hàng!`);
+        console.warn(`Cảnh báo bảo mật: Có kẻ gian (${cert.subject.CN}) định can thiệp kho hàng!`);
         return res.status(403).json({ error: "Forbidden: Bạn không có quyền can thiệp kho hàng!" });
     }
 

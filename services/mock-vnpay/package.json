@@ -1,5 +1,5 @@
 {
-  "name": "order-service",
+  "name": "mock-vnpay",
   "version": "1.0.0",
   "scripts": {
     "start": "node index.js"

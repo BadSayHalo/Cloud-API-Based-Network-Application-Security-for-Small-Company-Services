@@ -1,53 +1,204 @@
-name: CI/CD Pipeline
+# ==========================================
+# FILE: .github/workflows/pipeline.yml
+# MÔ TẢ: Pipeline CI/CD chuẩn DevSecOps tích hợp quét bảo mật toàn diện
+# ==========================================
 
-# Kích hoạt khi có code mới đẩy lên nhánh main
+name: CI/CD Security Pipeline
+
 on:
   push:
-    branches: [ "main", "FullSystem", "Final" ] # <--- Sửa dòng này
+    branches: [ "main", "FullSystem", "Final" ]
   pull_request:
-    branches: [ "main", "FullSystem", "Final" ] # <--- Sửa cả dòng này nữa
+    branches: [ "main", "FullSystem", "Final" ]
 
 jobs:
-  build-and-security-scan:
+
+  # ==========================================
+  # JOB 1: SECRETS SCANNING
+  # Phát hiện credentials/API keys bị lộ trong lịch sử Git
+  # Chạy TRƯỚC tất cả — nếu có secret bị lộ thì dừng ngay!
+  # ==========================================
+  secrets-scan:
+    name: 🔐 Secrets Scanning (TruffleHog)
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Kéo code từ repository về
       - name: 📥 Checkout Code
-        uses: actions/checkout@v3
-
-      # 2. Cài đặt môi trường Node.js
-      - name: ⚙️ Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/checkout@v4
         with:
-          node-version: '18'
+          fetch-depth: 0  # Lấy toàn bộ lịch sử commit để TruffleHog soi
 
-      # 3. Cài đặt thư viện cho Backend
-      - name: 📦 Install Backend Dependencies
+      - name: 🔍 TruffleHog Secrets Scan
+        uses: trufflesecurity/trufflehog@v3.63.5
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+
+  # ==========================================
+  # JOB 2: SAST + SCA (Source Code & Dependency Analysis)
+  # Phân tích mã nguồn và các thư viện phụ thuộc
+  # ==========================================
+  sast-and-sca:
+    name: 🛡️ SAST + Dependency Audit
+    runs-on: ubuntu-latest
+    needs: secrets-scan # Chỉ chạy sau khi qua ải Secrets
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ---- ORDER-SERVICE ----
+      - name: 📦 Install order-service dependencies
         run: |
           cd services/order-service
-          npm install
+          npm ci
 
-      # 4. [SECURITY] Quét lỗ hổng các thư viện Node.js (SCA)
-      - name: 🛡️ NPM Security Audit
+      - name: 🔎 NPM Audit — order-service
         run: |
           cd services/order-service
-          npm audit --audit-level=high || true 
-          # (Thêm || true để pipeline không bị sập nếu phát hiện lỗi, chỉ cảnh báo)
+          npm audit --audit-level=high --json > /tmp/audit-order.json || true
+          echo "=== NPM Audit Results (order-service) ==="
+          cat /tmp/audit-order.json | node -e "
+            const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+            const vulns = d.metadata ? d.metadata.vulnerabilities : {};
+            console.log('critical:', vulns.critical || 0);
+            console.log('high:', vulns.high || 0);
+            console.log('moderate:', vulns.moderate || 0);
+          " 2>/dev/null || cat /tmp/audit-order.json
 
-      # 5. Build Docker Image cho Backend
-      - name: 🐳 Build Docker Image
+      # ---- PRODUCT-SERVICE ----
+      - name: 📦 Install product-service dependencies
+        run: |
+          cd services/product-service
+          npm ci
+
+      - name: 🔎 NPM Audit — product-service
+        run: |
+          cd services/product-service
+          npm audit --audit-level=high --json > /tmp/audit-product.json || true
+          echo "=== NPM Audit Results (product-service) ==="
+          cat /tmp/audit-product.json | node -e "
+            const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+            const vulns = d.metadata ? d.metadata.vulnerabilities : {};
+            console.log('critical:', vulns.critical || 0);
+            console.log('high:', vulns.high || 0);
+            console.log('moderate:', vulns.moderate || 0);
+          " 2>/dev/null || cat /tmp/audit-product.json
+
+      # ---- SAST (SEMGREP) ----
+      # Quét source code tìm lỗ hổng logic (SQLi, XSS, Path Traversal...)
+      - name: 🧪 SAST — Semgrep (Offline Mode)
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/nodejs
+            p/owasp-top-ten
+            p/secrets
+
+      # ---- UPLOAD ARTIFACTS ----
+      - name: 📤 Upload Audit Reports
+        uses: actions/upload-artifact@v4
+        if: always()  # Upload kể cả khi step trước fail
+        with:
+          name: security-audit-reports
+          path: |
+            /tmp/audit-order.json
+            /tmp/audit-product.json
+          retention-days: 30
+
+  # ==========================================
+  # JOB 3: BUILD + CONTAINER IMAGE SCAN (DAST/SCA)
+  # Xây dựng Docker Image và quét lỗ hổng Hệ điều hành/Thư viện
+  # ==========================================
+  build-and-image-scan:
+    name: 🐳 Build & Container Scan (Trivy)
+    runs-on: ubuntu-latest
+    needs: sast-and-sca
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      # ==================================
+      # ORDER-SERVICE BUILD & SCAN
+      # ==================================
+      - name: 🐳 Build Docker Image — order-service
         run: |
           cd services/order-service
-          docker build -t capstone-backend:latest .
+          docker build -t capstone-order:latest .
 
-      # 6. [SECURITY] Quét lỗ hổng Docker Image bằng Trivy
-      - name: 🔍 Run Trivy Vulnerability Scanner
+      # Bước 1: Trích xuất JSON (Không ngắt Pipeline)
+      - name: 📄 Trivy Scan — order-service (Export JSON)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'capstone-backend:latest'
-          format: 'table'
-          exit-code: '0' 
+          image-ref: 'capstone-order:latest'
+          format: 'json'
+          output: '/tmp/trivy-order.json'
+          exit-code: '0'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
+
+      # Bước 2: Hiển thị bảng và ngắt Pipeline nếu có lỗi nghiêm trọng
+      - name: 🛑 Trivy Scan — order-service (Break Pipeline)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'capstone-order:latest'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      # ==================================
+      # PRODUCT-SERVICE BUILD & SCAN
+      # (Dùng if: always() để đảm bảo vẫn quét dù Order Service fail)
+      # ==================================
+      - name: 🐳 Build Docker Image — product-service
+        if: always()
+        run: |
+          cd services/product-service
+          docker build -t capstone-product:latest .
+
+      - name: 📄 Trivy Scan — product-service (Export JSON)
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'capstone-product:latest'
+          format: 'json'
+          output: '/tmp/trivy-product.json'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      - name: 🛑 Trivy Scan — product-service (Break Pipeline)
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'capstone-product:latest'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      # ==================================
+      # UPLOAD REPORTS
+      # ==================================
+      - name: 📤 Upload Trivy Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-scan-reports
+          path: |
+            /tmp/trivy-order.json
+            /tmp/trivy-product.json
+          retention-days: 30

@@ -13,7 +13,7 @@ services:
       KONG_PROXY_LISTEN: 0.0.0.0:8000, 0.0.0.0:8443 ssl
       KONG_ADMIN_LISTEN: 0.0.0.0:8001
       # CẬP NHẬT 2: Trỏ thẳng chứng chỉ ECC (mTLS) của Kong vào để nó làm SSL Termination
-      KONG_SSL_CERT: /certs/kong.crt
+      KONG_SSL_CERT: /certs/kong-bundle.crt
       KONG_SSL_CERT_KEY: /certs/kong.key
     ports:
       - "8000:8000"
@@ -28,8 +28,6 @@ services:
       context: ../frontend
       dockerfile: Dockerfile
     container_name: frontend-web
-    ports:
-      - "4000:80"
     networks:
       - capstone-net
     depends_on:
@@ -159,7 +157,7 @@ services:
       # 2. Mount thư mục chứa ID (Đổi đường dẫn để tránh xung đột)
       - ./.vault-ids:/etc/vault-ids:ro
       # 3. Mount thư mục chứng chỉ để Agent xác minh HTTPS của Vault Server
-      - ../certs:/vault/certs:ro
+      - ../certs:/vault/certs:rw
       # 4. Thư mục chia sẻ Token với Node.js
       - vault-token-share:/app/vault-token-share
     command: sh -c "mkdir -p /app/vault-token-share && vault agent -config=/etc/vault/agent.hcl"

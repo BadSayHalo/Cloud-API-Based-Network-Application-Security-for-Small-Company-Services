@@ -147,6 +147,14 @@ services:
           - /js
         strip_path: false
 
+  - name: frontend-service
+    url: http://frontend-web:80
+    routes:
+      - name: frontend-route
+        paths:
+          - /    # Bất cứ link nào không phải API sẽ được đẩy về Web giao diện
+        strip_path: false
+
 # ==========================================
 # 3. GLOBAL PLUGINS (ÁP DỤNG CHO TẤT CẢ)
 # ==========================================
