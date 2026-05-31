@@ -1,0 +1,32 @@
+[ kong_ext ]
+authorityKeyIdentifier=keyid,issuer
+basicConstraints=CA:FALSE
+keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+subjectAltName = @kong_san
+
+[ kong_san ]
+DNS.1 = kong-api
+DNS.2 = localhost
+IP.1  = 127.0.0.1
+
+[ vault_ext ]
+authorityKeyIdentifier=keyid,issuer
+basicConstraints=CA:FALSE
+keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+subjectAltName = @vault_san
+
+[ vault_san ]
+DNS.1 = vault-server
+DNS.2 = localhost
+IP.1  = 127.0.0.1
+
+[ vnpay_ext ]
+authorityKeyIdentifier=keyid,issuer
+basicConstraints=CA:FALSE
+keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+subjectAltName = @vnpay_san
+
+[ vnpay_san ]
+DNS.1 = mock-vnpay
+DNS.2 = localhost
+IP.1  = 127.0.0.1

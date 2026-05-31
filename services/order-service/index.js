@@ -15,6 +15,11 @@ app.use(express.json({
     }
 })); 
 
+const logstashAgent = new https.Agent({
+    ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt') ],
+    rejectUnauthorized: true 
+});
+
 // ==========================================
 // A. CẤU HÌNH BIẾN TOÀN CỤC & HTTPS AGENT CHO VAULT
 // ==========================================
@@ -26,7 +31,7 @@ let internalHttpsAgent; // Sẽ khởi tạo sau khi có chứng chỉ động
 
 // Agent chuyên dụng để Node.js gọi vào Vault (Vì Vault đang xài mTLS tĩnh)
 const vaultHttpsAgent = new https.Agent({
-    ca: fs.readFileSync('./certs/ca.crt'), // Root CA để tin tưởng Vault Server
+    ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt') ],
     checkServerIdentity: () => undefined 
 });
 
@@ -77,7 +82,7 @@ async function sendLog(level, action, message, req = null) {
         ip_address: req ? (req.headers['x-forwarded-for'] || req.socket.remoteAddress) : "N/A"
     };
     try {
-        await axios.post('http://logstash:5044', logData);
+        await axios.post('https://logstash:5044', logData, { httpsAgent: logstashAgent });
     } catch (err) {}
 }
 
@@ -98,7 +103,7 @@ function decrypt(text) {
         let iv = Buffer.from(parts[0], 'hex');
         let encryptedText = Buffer.from(parts[1], 'hex');
         let authTag = Buffer.from(parts[2], 'hex');
-        let decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(ENCRYPTION_KEY, 'utf-8'), iv);
+        let decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(ENCRYPTION_KEY, 'utf-8'), iv, { authTagLength: 16 });
         decipher.setAuthTag(authTag);
         let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
         decrypted += decipher.final('utf8');

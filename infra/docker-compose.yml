@@ -15,6 +15,10 @@ services:
       # CẬP NHẬT 2: Trỏ thẳng chứng chỉ ECC (mTLS) của Kong vào để nó làm SSL Termination
       KONG_SSL_CERT: /certs/kong-bundle.crt
       KONG_SSL_CERT_KEY: /certs/kong.key
+
+      KONG_CLIENT_SSL: "on"
+      KONG_CLIENT_SSL_CERT: /certs/kong-bundle.crt
+      KONG_CLIENT_SSL_CERT_KEY: /certs/kong.key
     ports:
       - "8000:8000"
       - "8443:8443" # CẬP NHẬT 3: Mở cổng HTTPS ra ngoài máy Host
@@ -190,6 +194,7 @@ services:
     container_name: logstash
     volumes:
       - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+      - ../certs:/certs:ro
     #ports:
     #  - "5044:5044"
     expose:

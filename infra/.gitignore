@@ -3,3 +3,4 @@
 .vault-ids/secret-id
 vault_keys.txt
 *.env
+certs/

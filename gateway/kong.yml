@@ -1,39 +1,11 @@
 _format_version: "3.0"
 
-certificates:
-  - id: "c90a1e0b-d242-43bb-a982-f5c719e71ab8"
-    cert: |
-      -----BEGIN CERTIFICATE-----
-      MIICUDCCAfagAwIBAgIUNmWW0f1R3S3L9O5CfpIpxF3RXdUwCgYIKoZIzj0EAwIw
-      eDELMAkGA1UEBhMCVk4xDDAKBgNVBAgMA0hDTTESMBAGA1UEBwwJSG9DaGlNaW5o
-      MQwwCgYDVQQKDANVSVQxFzAVBgNVBAsMDk5UMjE5LlEyMS5BTlRUMSAwHgYDVQQD
-      DBdVSVQgSW50ZXJtZWRpYXRlIENBIEVDQzAeFw0yNjA1MzAxNjI4MDRaFw0yNzA1
-      MzAxNjI4MDRaMDwxCzAJBgNVBAYTAlZOMQwwCgYDVQQIDANIQ00xDDAKBgNVBAoM
-      A1VJVDERMA8GA1UEAwwIa29uZy1hcGkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNC
-      AAT7vpsT80Dk29xfbxIEpu6C0RWyqOQj2ysq6gJ2sLsU2teoO7imhxajOH+sE+q4
-      /QbJPHI5/2pz2kbHp4xhfdEGo4GZMIGWMAkGA1UdEwQCMAAwDgYDVR0PAQH/BAQD
-      AgWgMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggrBgEFBQcDAjAaBgNVHREEEzARggls
-      b2NhbGhvc3SHBH8AAAEwHQYDVR0OBBYEFAO2hZdsYqT4fE1YPmFtfijX/Vz4MB8G
-      A1UdIwQYMBaAFAUPfH2b0szybEfxMBW7QvQMWjPfMAoGCCqGSM49BAMCA0gAMEUC
-      IE6bkPpyMoj1H680ITQwsi9Rr6WZ8FFpVEOH1oAI9URnAiEAt+qjyoXnkCBxUPf5
-      2v/6ytsCsFX8oia6uFbeXuBM9U0=
-      -----END CERTIFICATE-----
-    key: |
-      -----BEGIN EC PRIVATE KEY-----
-      MHcCAQEEIG5FM51+T7tDhEuDEqB54WBHic3DyhbvV6RoZfqutUHooAoGCCqGSM49
-      AwEHoUQDQgAE+76bE/NA5NvcX28SBKbugtEVsqjkI9srKuoCdrC7FNrXqDu4pocW
-      ozh/rBPquP0GyTxyOf9qc9pGx6eMYX3RBg==
-      -----END EC PRIVATE KEY-----
-
-
 services:
   # ==========================================
   # 1. SERVICE BACKEND (CẦN BẢO VỆ NGHIÊM NGẶT)
   # ==========================================
   - name: order-service-backend
     url: https://backend-order-api:3000
-    client_certificate:
-      id: "c90a1e0b-d242-43bb-a982-f5c719e71ab8"
     routes:
       - name: fetch-orders
         paths:
@@ -112,8 +84,6 @@ services:
   # ==========================================
   - name: product-service-backend
     url: https://backend-product-api:3001 # Phải là HTTPS vì code dùng https.createServer
-    client_certificate:
-      id: "c90a1e0b-d242-43bb-a982-f5c719e71ab8" # Dùng chung chứng chỉ mTLS với order
     routes:
       - name: fetch-products
         paths:

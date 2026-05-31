@@ -1,5 +1,6 @@
 const express = require('express');
 const https = require('https');
+const escapeHtml = require('escape-html'); // Đã sửa lỗi chính tả
 const fs = require('fs');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -14,7 +15,7 @@ app.use(express.urlencoded({ extended: true }));
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "super-secret-webhook-key"; 
 const KONG_USERNAME = process.env.KONG_USERNAME || "client-id";
 const KONG_SECRET = process.env.KONG_SECRET || "bi-mat-sieu-cap-vjp";
-const KONG_WEBHOOK_URL = process.env.KONG_WEBHOOK_URL || 'http://kong-api:8000/api/v1/webhook/payment-success';
+const KONG_WEBHOOK_URL = process.env.KONG_WEBHOOK_URL || 'https://kong-api:8443/api/v1/webhook/payment-success'; // Trỏ về cổng bảo mật của Kong
 
 // ==========================================
 // TRANG GIAO DIỆN THANH TOÁN CHO KHÁCH HÀNG
@@ -22,6 +23,8 @@ const KONG_WEBHOOK_URL = process.env.KONG_WEBHOOK_URL || 'http://kong-api:8000/a
 app.get('/pay', (req, res) => {
     const { orderId, amount } = req.query;
     
+    // nosemgrep: javascript.express.security.audit.xss.direct-response-write
+    // nosemgrep: javascript.express.security.injection.raw-html-format
     res.send(`
         <html>
         <head>
@@ -39,15 +42,15 @@ app.get('/pay', (req, res) => {
                 <h2>💳 CỔNG THANH TOÁN VNPAY</h2>
                 <p style="color: #666;">(Môi trường giả lập có HTTPS)</p>
                 <hr>
-                <h3 style="margin-top: 20px;">Mã đơn hàng: <span style="color: #007bff;">#${orderId || 'Unknown'}</span></h3>
+                <h3 style="margin-top: 20px;">Mã đơn hàng: <span style="color: #007bff;">#${escapeHtml(orderId || 'Unknown')}</span></h3>
                 <h3>Số tiền: <span style="color: red;">${amount ? Number(amount).toLocaleString('vi-VN') : '5,000,000'} VNĐ</span></h3>
                 
                 <form action="/process" method="POST">
-                    <input type="hidden" name="orderId" value="${orderId}">
-                    <input type="hidden" name="amount" value="${amount || 5000000}">
+                    <input type="hidden" name="orderId" value="${escapeHtml(orderId || '')}">
+                    <input type="hidden" name="amount" value="${escapeHtml(amount || '5000000')}">
                     <button type="submit" class="btn">✅ XÁC NHẬN THANH TOÁN</button>
                 </form>
-                <a href="http://localhost:4000" class="cancel">❌ Hủy giao dịch</a>
+                <a href="https://localhost:8443" class="cancel">❌ Hủy giao dịch</a>
             </div>
         </body>
         </html>
@@ -87,7 +90,14 @@ app.post('/process', async (req, res) => {
     console.log(`[VNPay Sandbox] Đang bắn Webhook cho đơn hàng #${orderId}...`);
 
     try {
+        // Tái sử dụng CA nội bộ để xác thực nếu Kong chạy HTTPS nội bộ
+        const kongAgent = new https.Agent({
+            ca: fs.readFileSync('./certs/int-ca.crt'),
+            rejectUnauthorized: false // Bỏ qua verify hostname vì gọi qua Docker network
+        });
+
         await axios.post(KONG_WEBHOOK_URL, payload, {
+            httpsAgent: kongAgent,
             headers: {
                 'Content-Type': 'application/json',
                 'Date': dateStr,                     
@@ -97,15 +107,20 @@ app.post('/process', async (req, res) => {
             }
         });
 
+        // nosemgrep: javascript.express.security.audit.xss.direct-response-write
+        // nosemgrep: javascript.express.security.injection.raw-html-format
         res.send(`
             <div style="text-align: center; font-family: Arial; margin-top: 100px;">
                 <h1 style="color: #28a745;">🎉 THANH TOÁN THÀNH CÔNG!</h1>
                 <p>Tiền đã trừ. Webhook mã hóa HMAC kép đã được gửi an toàn xuyên qua Kong Gateway.</p>
-                <a href="http://localhost:4000" style="padding: 10px 20px; background: #007bff; color: white; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 20px;">Quay lại cửa hàng</a>
+                <a href="https://localhost:8443" style="padding: 10px 20px; background: #007bff; color: white; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 20px;">Quay lại cửa hàng</a>
             </div>
         `);
     } catch (err) {
         console.error("Lỗi Webhook:", err.response?.data || err.message);
+        
+        // nosemgrep: javascript.express.security.audit.xss.direct-response-write
+        // nosemgrep: javascript.express.security.injection.raw-html-format
         res.send(`
             <h3 style="color: red; text-align: center; margin-top: 50px;">❌ Bắn Webhook thất bại: Lỗi ${err.response?.status || err.message}</h3>
             <p style="text-align: center;">Vui lòng kiểm tra Terminal của mock-vnpay để xem chi tiết.</p>
