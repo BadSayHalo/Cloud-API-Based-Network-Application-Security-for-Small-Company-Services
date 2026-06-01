@@ -1,8 +1,8 @@
 _format_version: "3.0"
-
+ 
 services:
   # ==========================================
-  # 1. SERVICE BACKEND (CẦN BẢO VỆ NGHIÊM NGẶT)
+  # 1. ORDER-SERVICE BACKEND
   # ==========================================
   - name: order-service-backend
     url: https://backend-order-api:3000
@@ -11,36 +11,48 @@ services:
         paths:
           - /api/v1/orders
           - /api/v1/admin
+          - /api/v1/profile 
         strip_path: false
-        
-        # NHỐT PLUGIN WAF VÀ JWT VÀO ĐÂY, CHỈ ÁP DỤNG CHO ĐƠN HÀNG
         plugins:
+          - name: request-size-limiting
+            config:
+              allowed_payload_size: 1
+ 
           - name: pre-function
             config:
               access:
                 - |
                   ngx.req.read_body()
-                  local req_body = ngx.req.get_body_data()
-                  if req_body then
-                    local patterns = {"OR%s+1=1", "UNION%s+SELECT", "DROP%s+TABLE", "<SCRIPT", "ALERT%s*%("}
-                    for _, pattern in ipairs(patterns) do
-                      if string.find(string.upper(req_body), pattern) then
-                        ngx.status = 403
-                        ngx.header.content_type = "application/json"
-                        ngx.say('{"error": "WAF: Phat hien hanh vi tan cong!"}')
-                        return ngx.exit(ngx.status)
-                      end
+                  local req_body = ngx.req.get_body_data() or ""
+                  local req_uri  = ngx.var.request_uri      or ""
+                  local check_target = string.upper(req_body .. " " .. req_uri)
+ 
+                  local patterns = {
+                    "OR%s+1=1", "UNION%s+SELECT", "DROP%s+TABLE", 
+                    "<SCRIPT", "ALERT%s*%(", "%.%./", "169%.254%.169%.254"
+                  }
+ 
+                  for _, pattern in ipairs(patterns) do
+                    if string.find(check_target, pattern) then
+                      ngx.status = 403
+                      ngx.header.content_type = "application/json"
+                      ngx.header["X-Kong-Block-Reason"] = "WAF_ATTACK_DETECTED"
+                      ngx.say('{"error": "WAF: Phat hien hanh vi tan cong!"}')
+                      return ngx.exit(ngx.status)
                     end
                   end
+ 
           - name: jwt
             config:
               claims_to_verify:
                 - exp
+ 
           - name: rate-limiting
             config:
               minute: 20
               policy: local
-
+ 
+      # --- Webhook route ---
       - name: payment-webhook
         paths:
           - /api/v1/webhook
@@ -50,90 +62,101 @@ services:
             config:
               enforce_headers:
                 - date
-                - request-line # Hoặc các header bạn cấu hình bên mock-vnpay
+                - request-line
               algorithms:
                 - hmac-sha256
-
-          # 1. Chống Spam: Webhook không thể gọi điên cuồng được, giới hạn 60 lần/phút
+ 
           - name: rate-limiting
             config:
               minute: 60
               policy: local
-              
-          # 2. Cân nhắc thêm WAF: Tái sử dụng lại đoạn code chống SQLi/XSS
+ 
+          - name: request-size-limiting
+            config:
+              allowed_payload_size: 1
+ 
           - name: pre-function
             config:
               access:
                 - |
                   ngx.req.read_body()
-                  local req_body = ngx.req.get_body_data()
-                  if req_body then
-                    local patterns = {"OR%s+1=1", "UNION%s+SELECT", "DROP%s+TABLE", "<SCRIPT", "ALERT%s*%("}
-                    for _, pattern in ipairs(patterns) do
-                      if string.find(string.upper(req_body), pattern) then
-                        ngx.status = 403
-                        ngx.header.content_type = "application/json"
-                        ngx.say('{"error": "WAF: Webhook Payload chua ma doc!"}')
-                        return ngx.exit(ngx.status)
-                      end
+                  local req_body = ngx.req.get_body_data() or ""
+                  local req_uri  = ngx.var.request_uri      or ""
+                  local check_target = string.upper(req_body .. " " .. req_uri)
+                  local patterns = {
+                    "OR%s+1=1", "UNION%s+SELECT", "DROP%s+TABLE",
+                    "<SCRIPT", "ALERT%s*%(", "%.%./", "169%.254%.169%.254"
+                  }
+                  for _, pattern in ipairs(patterns) do
+                    if string.find(check_target, pattern) then
+                      ngx.status = 403
+                      ngx.header.content_type = "application/json"
+                      ngx.header["X-Kong-Block-Reason"] = "WAF_WEBHOOK_ATTACK"
+                      ngx.say('{"error": "WAF: Webhook Payload chua ma doc!"}')
+                      return ngx.exit(ngx.status)
                     end
                   end
-
+ 
   # ==========================================
-  # SERVICE PRODUCT (MỞ CỬA CHO KHÁCH XEM)
+  # 2. PRODUCT-SERVICE (public catalog)
   # ==========================================
   - name: product-service-backend
-    url: https://backend-product-api:3001 # Phải là HTTPS vì code dùng https.createServer
+    url: https://backend-product-api:3001
     routes:
       - name: fetch-products
         paths:
           - /api/v1/products
         strip_path: false
-    # KHÔNG GẮN plugin JWT vào đây để khách xem hàng tự do
-    # KHÔNG GẮN plugin pre-function (WAF) vì đây chỉ là hàm GET
-
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 60
+              policy: local
+ 
   # ==========================================
-  # 2. SERVICE KEYCLOAK (MỞ CỬA CHO ĐĂNG NHẬP)
+  # 3. KEYCLOAK (ĐÃ SỬA THEO COMPOSE)
   # ==========================================
   - name: keycloak-service
-    url: http://keycloak:8080
+    url: http://keycloak-idp:8080
     routes:
-      # --- ĐƯỜNG A: ĐĂNG NHẬP / XIN TOKEN ---
       - name: keycloak-login-api
         paths:
           - /realms/laptop-store/protocol/openid-connect/token
         strip_path: false
         plugins:
-          - name: rate-limiting # CHỐNG BRUTE-FORCE: Chỉ cho gọi API đăng nhập 5 lần/phút
+          - name: rate-limiting
             config:
               minute: 5
               policy: local
-
-      # --- ĐƯỜNG B: TẢI GIAO DIỆN WEB ---
+ 
       - name: keycloak-auth-route
         paths:
           - /realms
           - /resources
           - /js
         strip_path: false
-
+ 
+  # ==========================================
+  # 4. FRONTEND
+  # ==========================================
   - name: frontend-service
     url: http://frontend-web:80
     routes:
       - name: frontend-route
         paths:
-          - /    # Bất cứ link nào không phải API sẽ được đẩy về Web giao diện
+          - /
         strip_path: false
-
+ 
 # ==========================================
-# 3. GLOBAL PLUGINS (ÁP DỤNG CHO TẤT CẢ)
+# GLOBAL PLUGINS
 # ==========================================
 plugins:
-
   - name: cors
     config:
       origins:
-        - "*"
+        - "http://localhost:4000"
+        - "http://localhost:8000"
+        - "https://localhost:8443" # Thêm URL HTTPS của Kong vào CORS
       methods:
         - GET
         - POST
@@ -153,19 +176,28 @@ plugins:
         - X-Auth-Token
       credentials: true
       max_age: 3600
-
+ 
+  - name: http-log
+    config:
+      http_endpoint: "http://logstash:5044" # Container name và port chuẩn theo compose
+      method: "POST"
+      timeout: 3000
+      keepalive: 1000
+      flush_timeout: 2
+      retry_count: 3
+ 
 consumers:
   - username: "keycloak-issuer"
     jwt_secrets:
-      - key: "http://localhost:8443/realms/laptop-store" # Đổi 8080 thành 8000 vì giờ Kong nhận diện Keycloak qua cổng 8000
+      - key: "http://localhost:8443/realms/laptop-store"
         algorithm: ES256
         rsa_public_key: |
           -----BEGIN PUBLIC KEY-----
           MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAESyniahnHumHiGzbUXyFpicO8PX74
           YaXQLTJfDOV7ga2DlnbgX5oP7bkvDGEiq0T1ImtarQgL2dZJY5y4G0Y77w==
           -----END PUBLIC KEY-----
-      
-  - username: "frontend-app"
+ 
+  - username: "vnpay-partner"
     hmacauth_credentials:
-      - username: "client-id"   # Client sẽ gửi cái này trong header
-        secret: "bi-mat-sieu-cap-vjp"
+      - username: "vnpay-partner"
+        secret: "${KONG_VNPAY_SECRET}"

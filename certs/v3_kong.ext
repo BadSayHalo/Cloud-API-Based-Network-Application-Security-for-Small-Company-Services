@@ -1,0 +1,13 @@
+basicConstraints = critical, CA:FALSE
+keyUsage = critical, digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth, clientAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+# ĐÂY LÀ DÒNG QUAN TRỌNG NHẤT:
+authorityInfoAccess = caIssuers;URI:http://localhost/download-int
+subjectAltName = @alt_names
+
+[ alt_names ]
+DNS.1 = kong-api
+DNS.2 = localhost
+IP.1 = 127.0.0.1

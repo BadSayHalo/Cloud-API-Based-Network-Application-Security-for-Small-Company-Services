@@ -44,7 +44,7 @@ async function getVaultToken() {
         if (fs.existsSync(tokenPath)) {
             return fs.readFileSync(tokenPath, 'utf8').trim();
         }
-        console.log("⏳ Dang doi Vault Agent cap Token...");
+        console.log("Dang doi Vault Agent cap Token...");
         await new Promise(res => setTimeout(res, 1000));
     }
     throw new Error("Timeout: Khong nhan duoc Token tu Vault Agent!");
@@ -68,9 +68,11 @@ async function getSecretsFromVault(token) {
     }
 }
 
-// ==========================================
-// C. LOGGING, MÃ HÓA & XÁC THỰC (Giữ nguyên logic của bạn)
-// ==========================================
+// ==============================
+// C. LOGGING, MÃ HÓA & XÁC THỰC
+// ==============================
+const getSafeKey = () => crypto.createHash('sha256').update(String(ENCRYPTION_KEY)).digest();
+
 async function sendLog(level, action, message, req = null) {
     const logData = {
         timestamp: new Date().toISOString(),
@@ -89,7 +91,7 @@ async function sendLog(level, action, message, req = null) {
 function encrypt(text) {
     if (!text || !ENCRYPTION_KEY) return null;
     let iv = crypto.randomBytes(IV_LENGTH);
-    let cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(ENCRYPTION_KEY, 'utf-8'), iv);
+    let cipher = crypto.createCipheriv('aes-256-gcm', getSafeKey(), iv);
     let encrypted = cipher.update(text, 'utf8', 'hex');
     encrypted += cipher.final('hex');
     let authTag = cipher.getAuthTag().toString('hex');
@@ -103,7 +105,7 @@ function decrypt(text) {
         let iv = Buffer.from(parts[0], 'hex');
         let encryptedText = Buffer.from(parts[1], 'hex');
         let authTag = Buffer.from(parts[2], 'hex');
-        let decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(ENCRYPTION_KEY, 'utf-8'), iv, { authTagLength: 16 });
+        let decipher = crypto.createDecipheriv('aes-256-gcm', getSafeKey(), iv, { authTagLength: 16 });
         decipher.setAuthTag(authTag);
         let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
         decrypted += decipher.final('utf8');
@@ -146,17 +148,41 @@ function verifyHMACSignature(req, res, next) {
 
     const now = Math.floor(Date.now() / 1000);
     if (!timestamp || Math.abs(now - timestamp) > 300) {
+        sendLog("CRITICAL", "REPLAY_ATTACK_ATTEMPT", `Phát hiện Webhook quá hạn hoặc không có Timestamp từ IP: ${req.headers['x-forwarded-for'] || req.socket.remoteAddress}`, req);
         return res.status(401).json({ error: "Request expired" });
     }
-
+    
     const rawBodyString = req.rawBody ? req.rawBody.toString('utf8') : '';
     const hmac = crypto.createHmac('sha256', secret).update(timestamp + rawBodyString).digest('hex');
 
     if (signature && crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(signature))) {
         next();
     } else {
+        sendLog("CRITICAL", "INVALID_HMAC_SIGNATURE", `Phát hiện HMAC Signature không hợp lệ từ IP: ${req.headers['x-forwarded-for'] || req.socket.remoteAddress}`, req);
         res.status(401).json({ error: "Invalid HMAC Signature!" });
     }
+}
+
+// ==========================================
+// THREAT DETECTION MIDDLEWARE (WAF MỀM)
+// ==========================================
+function securityMonitor(req, res, next) {
+    const payloadString = JSON.stringify(req.body || {}).toLowerCase();
+    
+    // 1. Phát hiện SQL Injection (SQLi) & Cross-Site Scripting (XSS) cơ bản
+    const sqlXssPattern = /(\b(select|update|delete|insert|drop|alter)\b)|(<script>|javascript:|onerror=)/i;
+    if (sqlXssPattern.test(payloadString)) {
+        sendLog("CRITICAL", "SQLI_XSS_ATTACK_ATTEMPT", `Phát hiện payload độc hại từ IP: ${req.headers['x-forwarded-for'] || req.socket.remoteAddress}. Payload: ${payloadString}`, req);
+        return res.status(403).json({ error: "Phát hiện hành vi đáng ngờ. Request bị từ chối!" });
+    }
+
+    // 2. Phát hiện Leo thang đặc quyền (Privilege Escalation / Mass Assignment)
+    if (req.body.role || req.body.is_admin || req.body.permissions) {
+        sendLog("CRITICAL", "PRIVILEGE_ESCALATION_ATTEMPT", `User cố gắng chèn trường phân quyền vào body!`, req);
+        return res.status(403).json({ error: "Trường dữ liệu không được phép!" });
+    }
+
+    next();
 }
 
 // ==========================================
@@ -218,7 +244,6 @@ app.post('/api/v1/orders', verifyUserContext, async (req, res) => {
         const { rows } = await pool.query(query, values);
         
         res.status(201).json({ message: "Tạo đơn hàng thành công", order_id: rows[0].id });
-        sendLog("INFO", "ORDER_CREATED", `Người dùng ${req.user.id} đã tạo đơn hàng #${rows[0].id}.`, req);
     } catch (err) {
         sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
         res.status(500).json({ error: "Lỗi hệ thống: " + err.message });
@@ -240,7 +265,6 @@ app.get('/api/v1/orders', verifyUserContext, async (req, res) => {
             payment_status: order.payment_status || 'Unpaid'
         }));
         res.status(200).json({ data: safeOrders });
-        sendLog("INFO", "ORDERS_FETCHED", `Người dùng ${req.user.id} đã lấy danh sách đơn hàng.`, req);
     } catch (err) { 
         sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
         res.status(500).json({ error: "Internal Error" }); 
@@ -283,7 +307,6 @@ app.patch('/api/v1/orders/:orderId/cancel', verifyUserContext, async (req, res) 
         const updateQuery = "UPDATE orders SET status = 'Cancelled' WHERE id = $1";
         await pool.query(updateQuery, [req.params.orderId]);
         
-        sendLog("INFO", "ORDER_CANCELLED", `Đơn hàng ${req.params.orderId} đã hủy và hoàn lại ${order.qty} sản phẩm.`, req);
         res.json({ message: `Đã hủy thành công đơn hàng #${req.params.orderId} và hoàn kho.` });
     } catch (err) {
         sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
@@ -316,7 +339,6 @@ app.patch('/api/v1/orders/:orderId/deliver', verifyUserContext, async (req, res)
         const updateQuery = "UPDATE orders SET status = 'Delivered' WHERE id = $1";
         await pool.query(updateQuery, [req.params.orderId]);
         
-        sendLog("INFO", "ORDER_DELIVERED", `Đơn hàng ${req.params.orderId} đã được giao thành công.`, req);
         res.json({ message: `Cảm ơn bạn! Đơn hàng #${req.params.orderId} đã được giao thành công.` });
     } catch (err) {
         sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
@@ -333,6 +355,11 @@ app.post('/api/v1/profile', verifyUserContext, async (req, res) => {
             return res.status(400).json({ error: "Vui lòng điền đủ Số điện thoại và Thành phố!" });
         }
 
+        if (phone?.length > 20 || city?.length > 100) {
+            sendLog("CRITICAL", "BUFFER_OVERFLOW_ATTEMPT", `Data đầu vào quá dài: phone(${phone?.length}), city(${city?.length})`, req);
+            return res.status(400).json({ error: "Độ dài dữ liệu không hợp lệ!" });
+        }
+        
         // 2. Mã hóa Số điện thoại bằng AES-256-GCM
         const encryptedPhone = encrypt(phone);
 
@@ -345,9 +372,7 @@ app.post('/api/v1/profile', verifyUserContext, async (req, res) => {
         `;
         await pool.query(query, [encryptedPhone, city, req.user.id]);
         
-        // 4. Ghi log cảnh báo giám sát
-        sendLog("INFO", "PROFILE_UPDATED", `User ${req.user.id} đã cập nhật hồ sơ (Đã mã hóa AES)`, req);
-        
+        // 4. Ghi log cảnh báo giám sát        
         res.status(200).json({ message: "Đã lưu và mã hóa thông tin hồ sơ an toàn!" });
     } catch (err) {
         sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
@@ -428,9 +453,21 @@ app.post('/api/v1/webhook/payment-success', verifyHMACSignature, async (req, res
         const { order_id, transaction_id } = req.body;
         
         // Cập nhật trạng thái đơn hàng thành Paid
-        await pool.query("UPDATE orders SET payment_status = 'Paid', status = 'Processing' WHERE id = $1", [order_id]);
+        const checkQuery = 'SELECT status, payment_status FROM orders WHERE id = $1';
+        const { rows } = await pool.query(checkQuery, [order_id]);
         
-        sendLog("INFO", "WEBHOOK_PAYMENT_SUCCESS", `Webhook xác nhận thanh toán cho đơn ${order_id} (Txn: ${transaction_id})`, req);
+        if (rows.length === 0) {
+            sendLog("WARN", "PAYMENT_FUZZING_ATTEMPT", `Webhook báo thanh toán cho đơn hàng không tồn tại: ${order_id}`, req);
+            return res.status(404).json({ error: "Order not found" });
+        }
+        
+        if (rows[0].payment_status === 'Paid') {
+            sendLog("WARN", "DUPLICATE_PAYMENT_ATTEMPT", `Đơn hàng ${order_id} đã được thanh toán trước đó, cẩn thận tấn công Double Spend!`, req);
+            return res.status(200).json({ message: "Đã xử lý trước đó" }); 
+        }
+
+        await pool.query("UPDATE orders SET payment_status = 'Paid', status = 'Processing' WHERE id = $1", [order_id]);
+
         res.status(200).json({ message: "Webhook processed successfully" });
     } catch (err) {
         sendLog("ERROR", "WEBHOOK_ERROR", err.message, req);

@@ -5,23 +5,93 @@ const fs = require('fs');
 const axios = require('axios');
 
 const app = express();
-app.use(express.json());
+// BẢO MẬT: Giới hạn dung lượng payload để chống DDoS tràn bộ nhớ
+app.use(express.json({
+    limit: '5mb', 
+    verify: (req, res, buf) => {
+        req.rawBody = buf; 
+    }
+}));
 
 // ==========================================
 // A. CẤU HÌNH VAULT & BIẾN TOÀN CỤC
 // ==========================================
-// BẮT BUỘC dùng HTTPS để giao tiếp với Vault Server mới
 const VAULT_ADDR = process.env.VAULT_ADDR || 'https://vault-server:8200';
 let pool; 
+let internalHttpsAgent;
 
-// Agent chuyên dụng để Product Service gọi vào Vault an toàn
+// Agent chuyên dụng cho Vault
 const vaultHttpsAgent = new https.Agent({
-    ca: fs.readFileSync('./certs/ca.crt'), 
+    ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt') ], 
     checkServerIdentity: () => undefined 
 });
 
+// Agent chuyên dụng để bắn log sang ELK
+const logstashAgent = new https.Agent({
+    ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt') ],
+    rejectUnauthorized: true 
+});
+
 // ==========================================
-// B. CÁC HÀM GIAO TIẾP VỚI VAULT
+// B. HỆ THỐNG GIÁM SÁT & BÁO CÁO (SIEM)
+// ==========================================
+async function sendLog(level, action, message, req = null) {
+    const logData = {
+        timestamp: new Date().toISOString(),
+        service: "product-service", // Đã đổi tên để phân biệt với order-service
+        level: level,       
+        action: action,     
+        message: message,
+        user_id: req && req.user ? req.user.id : "anonymous",
+        ip_address: req ? (req.headers['x-forwarded-for'] || req.socket.remoteAddress) : "N/A"
+    };
+    try {
+        await axios.post('https://logstash:5044', logData, { httpsAgent: logstashAgent });
+    } catch (err) {}
+}
+
+// ==========================================
+// THREAT DETECTION MIDDLEWARE (WAF MỀM)
+// ==========================================
+function securityMonitor(req, res, next) {
+    const payloadString = JSON.stringify(req.body || {}).toLowerCase();
+    
+    // 1. Phát hiện SQL Injection (SQLi) & Cross-Site Scripting (XSS)
+    const sqlXssPattern = /(\b(select|update|delete|insert|drop|alter)\b)|(<script>|javascript:|onerror=)/i;
+    if (sqlXssPattern.test(payloadString)) {
+        sendLog("CRITICAL", "SQLI_XSS_ATTACK_ATTEMPT", `Phát hiện payload độc hại. Payload: ${payloadString}`, req);
+        return res.status(403).json({ error: "Phát hiện hành vi đáng ngờ. Request bị từ chối!" });
+    }
+
+    // 2. Phát hiện cố tình truyền data quá lớn (Parameter Tampering)
+    if (payloadString.length > 5000) {
+        sendLog("WARN", "LARGE_PAYLOAD_ATTEMPT", `Data đầu vào quá lớn bất thường!`, req);
+    }
+
+    next();
+}
+
+// Middleware Chốt chặn siêu cấp bảo mật mTLS (Có thêm Alert)
+function requireInternalMTLS(req, res, next) {
+    const cert = req.socket.getPeerCertificate();
+    
+    // 1. Nếu không có chứng chỉ hoặc chứng chỉ không do CA nội bộ cấp
+    if (!req.client.authorized || !cert || !cert.subject) {
+        sendLog("CRITICAL", "UNAUTHORIZED_MTLS_ACCESS", `IP ${req.socket.remoteAddress} cố gắng gọi API nội bộ mà không có chứng chỉ mTLS!`, req);
+        return res.status(403).json({ error: "Forbidden: Yêu cầu chứng chỉ mTLS hợp lệ!" });
+    }
+
+    // 2. [BẢO MẬT CHIỀU SÂU]: Chỉ đích danh 'backend-order-api' mới được phép trừ/hoàn kho
+    if (cert.subject.CN !== 'backend-order-api') {
+        sendLog("CRITICAL", "UNAUTHORIZED_SERVICE_ACCESS", `Service lạ (${cert.subject.CN}) định can thiệp kho hàng!`, req);
+        return res.status(403).json({ error: "Forbidden: Bạn không có quyền can thiệp kho hàng!" });
+    }
+
+    next();
+}
+
+// ==========================================
+// C. CÁC HÀM GIAO TIẾP VỚI VAULT
 // ==========================================
 async function getVaultToken() {
     const tokenPath = '/app/vault-token-share/.vault-token';
@@ -29,7 +99,7 @@ async function getVaultToken() {
         if (fs.existsSync(tokenPath)) {
             return fs.readFileSync(tokenPath, 'utf8').trim();
         }
-        console.log("Dang doi Vault Agent cap Token cho Product Service...");
+        console.log("⏳ Dang doi Vault Agent cap Token cho Product Service...");
         await new Promise(res => setTimeout(res, 1000));
     }
     throw new Error("Timeout: Khong nhan duoc Token tu Vault Agent!");
@@ -37,6 +107,8 @@ async function getVaultToken() {
 
 async function getDbUrlFromVault(token) {
     try {
+        // LƯU Ý: Đang dùng chung secret/data/order-service của Order Service để lấy DB_URL. 
+        // Nếu sau này bạn tách DB, nhớ đổi đường dẫn này thành secret/data/product-service
         const response = await axios.get(`${VAULT_ADDR}/v1/secret/data/order-service`, {
             headers: { 'X-Vault-Token': token },
             httpsAgent: vaultHttpsAgent
@@ -49,11 +121,11 @@ async function getDbUrlFromVault(token) {
 }
 
 // ==========================================
-// C. API ROUTES
+// D. API ROUTES
 // ==========================================
 
-// 1. API cho Khách xem danh sách (Mở cho Kong Gateway truy cập)
-app.get('/api/v1/products', async (req, res) => {
+// 1. API cho Khách xem danh sách
+app.get('/api/v1/products', securityMonitor, async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT sku, name, price, stock, brand_id, category_id FROM products ORDER BY name ASC');
         res.status(200).json({ 
@@ -62,56 +134,69 @@ app.get('/api/v1/products', async (req, res) => {
             data: rows 
         });
     } catch (err) {
-        console.error("Lỗi lấy danh sách sản phẩm:", err.message);
+        sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
         res.status(500).json({ error: "Lỗi kết nối CSDL Sản phẩm" });
     }
 });
 
 // 2. API cho Order Service check giá
-app.get('/api/v1/products/:sku', async (req, res) => {
+app.get('/api/v1/products/:sku', securityMonitor, async (req, res) => {
     try {
         const sku = req.params.sku;
         const { rows } = await pool.query('SELECT * FROM products WHERE sku = $1', [sku]);
         if (rows.length === 0) return res.status(404).json({ error: `Không tìm thấy SKU: ${sku}` });
         res.status(200).json({ data: rows[0] });
     } catch (err) {
+        sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
         res.status(500).json({ error: "Lỗi hệ thống khi tra cứu SKU" });
     }
 });
 
-// 3. API Trừ số lượng (CHỈ CHO PHÉP ORDER SERVICE GỌI - Kiểm tra qua mTLS)
-app.patch('/api/v1/products/:sku/reduce-stock', requireInternalMTLS, async (req, res) => {
+// 3. API Trừ số lượng (Có bảo vệ mTLS kép)
+app.patch('/api/v1/products/:sku/reduce-stock', requireInternalMTLS, securityMonitor, async (req, res) => {
     const { qty } = req.body;
     const { sku } = req.params;
     try {
         const query = `UPDATE products SET stock = stock - $1 WHERE sku = $2 AND stock >= $1 RETURNING *`;
         const { rows } = await pool.query(query, [qty, sku]);
-        if (rows.length === 0) return res.status(400).json({ error: "Hết hàng hoặc số lượng tồn kho không đủ!" });
+        
+        if (rows.length === 0) {
+            sendLog("WARN", "STOCK_REDUCTION_FAILED", `Không đủ hàng trong kho cho SKU: ${sku}, yêu cầu trừ: ${qty}`, req);
+            return res.status(400).json({ error: "Hết hàng hoặc số lượng tồn kho không đủ!" });
+        }
+        
         res.status(200).json({ message: "Trừ kho thành công", product: rows[0] });
-    } catch (err) { res.status(500).json({ error: "Lỗi DB khi cập nhật kho" }); }
+    } catch (err) { 
+        sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
+        res.status(500).json({ error: "Lỗi DB khi cập nhật kho" }); 
+    }
 });
 
-// 4. API Hoàn số lượng (CHỈ CHO PHÉP ORDER SERVICE GỌI)
-app.patch('/api/v1/products/:sku/add-stock', requireInternalMTLS, async (req, res) => {
+// 4. API Hoàn số lượng (Có bảo vệ mTLS kép)
+app.patch('/api/v1/products/:sku/add-stock', requireInternalMTLS, securityMonitor, async (req, res) => {
     const { qty } = req.body;
     const { sku } = req.params;
     try {
         const query = `UPDATE products SET stock = stock + $1 WHERE sku = $2 RETURNING *`;
         const { rows } = await pool.query(query, [qty, sku]);
+        
         if (rows.length === 0) return res.status(404).json({ error: "Không tìm thấy sản phẩm để hoàn kho!" });
         res.status(200).json({ message: "Hoàn kho thành công", product: rows[0] });
-    } catch (err) { res.status(500).json({ error: "Lỗi DB khi hoàn kho" }); }
+    } catch (err) { 
+        sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
+        res.status(500).json({ error: "Lỗi DB khi hoàn kho" }); 
+    }
 });
 
 // ==========================================
-// D. KHỞI ĐỘNG HỆ THỐNG CÙNG mTLS
+// E. KHỞI ĐỘNG HỆ THỐNG CÙNG mTLS
 // ==========================================
 async function bootstrap() {
     try {
         // 1. Chờ lấy Token từ Vault Agent
         const VAULT_TOKEN = await getVaultToken();
         
-        // 2. Lấy DB URL từ Vault (Dùng đúng hàm getDbUrlFromVault của Product)
+        // 2. Lấy DB URL từ Vault
         const dbUrl = await getDbUrlFromVault(VAULT_TOKEN);
         if (!dbUrl) {
             console.error("KHÔNG THỂ KHỞI ĐỘNG: Không lấy được DB URL từ Vault!");
@@ -119,39 +204,30 @@ async function bootstrap() {
         }
 
         // 3. Đứng chờ Vault Agent sinh file chứng chỉ ra ổ cứng
-        const bundlePath = './certs/order-bundle.json';
+        // CẬP NHẬT: Đổi thành product-bundle.json để đúng chuẩn Microservices độc lập
+        const bundlePath = './certs/product-bundle.json'; 
         
         while (!fs.existsSync(bundlePath)) {
-            console.log("⏳ Đang chờ Vault Agent cấp chứng chỉ (order-bundle.json)...");
+            console.log("⏳ Đang chờ Vault Agent cấp chứng chỉ (product-bundle.json)...");
             await new Promise(res => setTimeout(res, 2000));
         }
 
         // 4. Đọc chứng chỉ từ file JSON
         const bundleData = JSON.parse(fs.readFileSync(bundlePath, 'utf8'));
-        const orderCert = bundleData.certificate;
-        const orderKey = bundleData.private_key;
+        const productCert = bundleData.certificate;
+        const productKey = bundleData.private_key;
         const dynamicCa = bundleData.issuing_ca;
 
-        // 5. Cấu hình Internal Agent
-        internalHttpsAgent = new https.Agent({
-            key: orderKey,
-            cert: orderCert,
-            // Nạp cả Root CA, Int CA và CA động từ Vault vào
-            ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt'), dynamicCa ],
-            checkServerIdentity: () => undefined, 
-            rejectUnauthorized: true 
-        });
-
-        // 6. Cấu hình HTTPS Server
+        // 5. Cấu hình HTTPS Server
         const options = {
-            key: orderKey,
-            cert: orderCert,
+            key: productKey,
+            cert: productCert,
             ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt') ],
             requestCert: true,
             rejectUnauthorized: true
         };
 
-        // 7. Kết nối DB (Đã fix lỗi cú pháp { ... } ở đây)
+        // 6. Kết nối DB
         pool = new Pool({ 
             connectionString: dbUrl, 
             ssl: { 
@@ -160,11 +236,12 @@ async function bootstrap() {
             }
         });
 
-        // 8. Bật Server (Đảm bảo là cổng 3001)
+        // 7. Bật Server (Cổng 3001)
         const PORT = process.env.PORT || 3001;
         https.createServer(options, app).listen(PORT, '0.0.0.0', () => {
             console.log('============================================');
             console.log(`Product Service đã khởi động (Cổng ${PORT})`);
+            console.log('Đã tích hợp bảo mật mTLS & Giám sát SIEM.');
             console.log('============================================');
         });
 
@@ -172,23 +249,6 @@ async function bootstrap() {
         console.error("Fatal Error:", err);
         process.exit(1);
     }
-}
-
-// Middleware Chốt chặn siêu cấp bảo mật
-function requireInternalMTLS(req, res, next) {
-    const cert = req.socket.getPeerCertificate();
-    
-    if (!req.client.authorized || !cert || !cert.subject) {
-        return res.status(403).json({ error: "Forbidden: Yêu cầu chứng chỉ mTLS hợp lệ!" });
-    }
-
-    // [BẢO MẬT CHIỀU SÂU]: Chỉ đích danh 'backend-order-api' mới được phép trừ/hoàn kho
-    if (cert.subject.CN !== 'backend-order-api') {
-        console.warn(`Cảnh báo bảo mật: Có kẻ gian (${cert.subject.CN}) định can thiệp kho hàng!`);
-        return res.status(403).json({ error: "Forbidden: Bạn không có quyền can thiệp kho hàng!" });
-    }
-
-    next();
 }
 
 bootstrap();

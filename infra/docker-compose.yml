@@ -9,6 +9,8 @@ services:
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /usr/local/kong/declarative/kong.yml
+      KONG_DECLARATIVE_CONFIG_STRING_INTERPOLATION: "true"
+      KONG_VNPAY_SECRET: ${KONG_VNPAY_SECRET}
       # CẬP NHẬT 1: Báo cho Kong biết phải lắng nghe thêm cổng 8443 có bọc SSL
       KONG_PROXY_LISTEN: 0.0.0.0:8000, 0.0.0.0:8443 ssl
       KONG_ADMIN_LISTEN: 0.0.0.0:8001
@@ -209,6 +211,13 @@ services:
     container_name: kibana
     ports:
       - "127.0.0.1:5601:5601"
+    environment:
+      # 👇 THÊM 3 DÒNG NÀY ĐỂ BẬT HTTPS
+      - SERVER_SSL_ENABLED=true
+      - SERVER_SSL_CERTIFICATE=/certs/kong-bundle.crt
+      - SERVER_SSL_KEY=/certs/kong.key
+    volumes:
+      - ../certs:/certs:ro
     depends_on:
       - elasticsearch
     networks:

@@ -129,26 +129,26 @@
         // ==========================================
         // 1. KIỂM TRA ĐĂNG NHẬP & BẢO MẬT
         // ==========================================
-        const accessToken = localStorage.getItem('accessToken');
-        const refreshToken = localStorage.getItem('refreshToken');
+        function getAccessToken() { return localStorage.getItem('accessToken'); }
+        function getRefreshToken() { return localStorage.getItem('refreshToken'); }
 
-        if (!accessToken) {
+        if (!getAccessToken()) {
             window.location.href = "/login"; 
         } else {
+            updateDashboardInfo();
+        }
+
+        function updateDashboardInfo() {
             try {
-                const payload = JSON.parse(atob(accessToken.split('.')[1]));
+                const token = getAccessToken();
+                const payload = JSON.parse(atob(token.split('.')[1]));
                 const expTime = new Date(payload.exp * 1000); 
                 
-                if (Date.now() >= expTime.getTime()) {
-                    console.log("Thẻ JWT đã hết hạn. Đang tự động đăng xuất...");
-                    logout(); 
-                } else {
-                    document.getElementById('dash-user').innerText = payload.preferred_username || payload.email || 'User';
-                    document.getElementById('dash-session').innerText = payload.sid;
-                    document.getElementById('dash-exp').innerText = expTime.toLocaleTimeString('vi-VN');
-                }
+                document.getElementById('dash-user').innerText = payload.preferred_username || payload.email || 'User';
+                document.getElementById('dash-session').innerText = payload.sid;
+                document.getElementById('dash-exp').innerText = expTime.toLocaleTimeString('vi-VN');
             } catch (e) {
-                logout(); 
+                console.error("Lỗi đọc Token", e);
             }
         }
 
@@ -156,6 +156,65 @@
             const res = document.getElementById('result');
             res.style.color = color;
             res.innerText = msg;
+        }
+
+        // ==========================================
+        // TÍNH NĂNG AUTO-REFRESH TOKEN VỚI FETCH
+        // ==========================================
+        async function fetchWithAuth(url, options = {}) {
+            // Luôn lấy token mới nhất trước khi gọi
+            if (!options.headers) options.headers = {};
+            options.headers['Authorization'] = 'Bearer ' + getAccessToken();
+
+            let response = await fetch(url, options);
+
+            // Nếu Backend báo 401 (Hết hạn Access Token)
+            if (response.status === 401) {
+                console.log("⏳ Token hết hạn, đang tự động gia hạn ngầm...");
+                const rToken = getRefreshToken();
+                
+                if (!rToken) {
+                    logout();
+                    return response;
+                }
+
+                // Gọi Keycloak xin Token mới
+                const params = new URLSearchParams({
+                    client_id: 'frontend-app', // Tên client của bạn trong Keycloak
+                    grant_type: 'refresh_token',
+                    refresh_token: rToken
+                });
+
+                try {
+                    const refreshRes = await fetch("https://localhost:8443/realms/laptop-store/protocol/openid-connect/token", {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: params
+                    });
+
+                    if (refreshRes.ok) {
+                        const data = await refreshRes.json();
+                        // Lưu Token mới toanh vào trình duyệt
+                        localStorage.setItem('accessToken', data.access_token);
+                        localStorage.setItem('refreshToken', data.refresh_token);
+                        
+                        console.log("✅ Gia hạn Token thành công! Đang gọi lại API...");
+                        updateDashboardInfo(); // Cập nhật lại thời gian trên giao diện
+
+                        // Gắn Token mới và gọi lại API bị tịt ban nãy
+                        options.headers['Authorization'] = 'Bearer ' + data.access_token;
+                        return await fetch(url, options);
+                    } else {
+                        // Refresh Token cũng hết hạn -> Đuổi ra log in lại
+                        console.error("Phiên đăng nhập đã hết hạn hoàn toàn.");
+                        logout();
+                    }
+                } catch (err) {
+                    console.error("Lỗi khi gia hạn token:", err);
+                    logout();
+                }
+            }
+            return response;
         }
 
         // ==========================================
@@ -170,10 +229,9 @@
             tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">⏳ Đang tải sản phẩm từ CSDL...</td></tr>';
             
             try {
-                // ĐỔI SANG HTTPS 8443
-                const response = await fetch("https://localhost:8443/api/v1/products", {
-                    method: 'GET',
-                    headers: { 'Authorization': 'Bearer ' + accessToken } 
+                // Dùng fetchWithAuth thay vì fetch
+                const response = await fetchWithAuth("https://localhost:8443/api/v1/products", {
+                    method: 'GET'
                 });
                 
                 const resData = await response.json();
@@ -255,9 +313,11 @@
             };
             logResult("⏳ Đang tạo đơn hàng qua Kong Gateway...");
             try {
-                // ĐỔI SANG HTTPS 8443
-                const response = await fetch("https://localhost:8443/api/v1/orders", {
-                    method: 'POST', headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body: JSON.stringify(data)
+                // Dùng fetchWithAuth
+                const response = await fetchWithAuth("https://localhost:8443/api/v1/orders", {
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify(data)
                 });
                 const resData = await response.json();
                 logResult(`HTTP ${response.status}\n\n` + JSON.stringify(resData, null, 2));
@@ -284,9 +344,9 @@
             tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">Đang tải...</td></tr>';
             
             try {
-                // ĐỔI SANG HTTPS 8443
-                const response = await fetch("https://localhost:8443/api/v1/orders", { 
-                    method: 'GET', headers: { 'Authorization': 'Bearer ' + accessToken } 
+                // Dùng fetchWithAuth
+                const response = await fetchWithAuth("https://localhost:8443/api/v1/orders", { 
+                    method: 'GET'
                 });
                 const resData = await response.json();
                 
@@ -339,9 +399,9 @@
             
             logResult(`⏳ Đang xử lý yêu cầu ${action} cho đơn #${orderId}...`);
             try {
-                // ĐỔI SANG HTTPS 8443
-                const response = await fetch(`https://localhost:8443/api/v1/orders/${orderId}/${action}`, {
-                    method: 'PATCH', headers: { 'Authorization': 'Bearer ' + accessToken }
+                // Dùng fetchWithAuth
+                const response = await fetchWithAuth(`https://localhost:8443/api/v1/orders/${orderId}/${action}`, {
+                    method: 'PATCH'
                 });
                 const resData = await response.json();
                 if (response.ok) {
@@ -357,9 +417,11 @@
             logResult("⏳ Đang cập nhật hồ sơ...");
             const data = { phone: document.getElementById('userPhone').value, city: document.getElementById('userCity').value };
             try {
-                // ĐỔI SANG HTTPS 8443
-                const response = await fetch("https://localhost:8443/api/v1/profile", {
-                    method: 'POST', headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body: JSON.stringify(data)
+                // Dùng fetchWithAuth
+                const response = await fetchWithAuth("https://localhost:8443/api/v1/profile", {
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify(data)
                 });
                 const resData = await response.json();
                 logResult(response.ok ? `✅ ${resData.message}` : `❌ Lỗi: ${resData.error}`, response.ok ? "#28a745" : "#ff4757");
@@ -367,11 +429,11 @@
         }
 
         async function logout() {
-            if (refreshToken) {
+            const rToken = getRefreshToken();
+            if (rToken) {
                 logResult("⏳ Đang đăng xuất khỏi Keycloak...");
-                const params = new URLSearchParams({ client_id: 'kong-gateway', refresh_token: refreshToken });
+                const params = new URLSearchParams({ client_id: 'frontend-app', refresh_token: rToken });
                 try {
-                    // ĐỔI SANG HTTPS 8443
                     await fetch("https://localhost:8443/realms/laptop-store/protocol/openid-connect/logout", {
                         method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params
                     });
@@ -390,7 +452,6 @@
             logResult(`⏳ Đang kết nối tới Cổng thanh toán VNPay cho đơn hàng #${orderId} (Tổng: ${amount.toLocaleString('vi-VN')} đ)...`);
             
             setTimeout(() => {
-                // ĐỔI SANG HTTPS 4001
                 window.location.href = `https://localhost:4001/pay?orderId=${orderId}&amount=${amount}`;
             }, 1000);
         }
