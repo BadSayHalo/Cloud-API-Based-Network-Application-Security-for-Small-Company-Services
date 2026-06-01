@@ -43,7 +43,7 @@ app.get('/pay', (req, res) => {
                 <p style="color: #666;">(Môi trường giả lập có HTTPS)</p>
                 <hr>
                 <h3 style="margin-top: 20px;">Mã đơn hàng: <span style="color: #007bff;">#${escapeHtml(orderId || 'Unknown')}</span></h3>
-                <h3>Số tiền: <span style="color: red;">${amount ? Number(amount).toLocaleString('vi-VN') : '5,000,000'} VNĐ</span></h3>
+                <h3>Số tiền: <span style="color: red;">${escapeHtml(amount ? Number(amount).toLocaleString('vi-VN') : '5,000,000')} VNĐ</span></h3>
                 
                 <form action="/process" method="POST">
                     <input type="hidden" name="orderId" value="${escapeHtml(orderId || '')}">
@@ -90,8 +90,8 @@ app.post('/process', async (req, res) => {
     console.log(`[VNPay Sandbox] Đang bắn Webhook cho đơn hàng #${orderId}...`);
 
     try {
-        // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
         // Tái sử dụng CA nội bộ để xác thực nếu Kong chạy HTTPS nội bộ
+        // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
         const kongAgent = new https.Agent({
             ca: fs.readFileSync('./certs/int-ca.crt'),
             rejectUnauthorized: false // Bỏ qua verify hostname vì gọi qua Docker network
