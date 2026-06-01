@@ -1,4 +1,8 @@
-certs/**
-gateway/**
-infra/**
+@"
+certs/
+gateway/
+infra/
 schema.sql
+**/node_modules/
+services/mock-vnpay/
+"@ | Out-File -FilePath .semgrepignore -Encoding ASCII
