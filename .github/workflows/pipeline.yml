@@ -116,7 +116,7 @@ jobs:
           docker build -t capstone-order:latest .
 
       - name: Trivy Scan - order-service (Export JSON)
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: capstone-order:latest
           format: json
@@ -127,7 +127,7 @@ jobs:
           severity: CRITICAL,HIGH
 
       - name: Trivy Scan - order-service (Break Pipeline)
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: capstone-order:latest
           format: table
@@ -144,7 +144,7 @@ jobs:
 
       - name: Trivy Scan - product-service (Export JSON)
         if: always()
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: capstone-product:latest
           format: json
@@ -156,7 +156,7 @@ jobs:
 
       - name: Trivy Scan - product-service (Break Pipeline)
         if: always()
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: capstone-product:latest
           format: table
