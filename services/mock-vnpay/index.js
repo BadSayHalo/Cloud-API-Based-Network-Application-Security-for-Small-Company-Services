@@ -90,6 +90,7 @@ app.post('/process', async (req, res) => {
     console.log(`[VNPay Sandbox] Đang bắn Webhook cho đơn hàng #${orderId}...`);
 
     try {
+        // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
         // Tái sử dụng CA nội bộ để xác thực nếu Kong chạy HTTPS nội bộ
         const kongAgent = new https.Agent({
             ca: fs.readFileSync('./certs/int-ca.crt'),
