@@ -7,7 +7,6 @@ Dự án này là một nguyên mẫu (prototype) mô phỏng hệ thống thư�
 - [Cấu trúc Thư mục](#-cấu-trúc-thư-mục)
 - [Hướng dẫn Setup & Khởi chạy](#-hướng-dẫn-setup--khởi-chạy)
 - [Thông tin Đăng nhập Mặc định](#-thông-tin-đăng-nhập-mặc-định)
-- [Hướng dẫn Kiểm thử Bảo mật (Pentest)](#-hướng-dẫn-kiểm-thử-bảo-mật-pentest)
 
 ---
 
@@ -176,4 +175,7 @@ vault read -field=role_id auth/approle/role/product-service-role > /vault/ids/pr
 vault write -f -field=secret_id auth/approle/role/product-service-role/secret-id > /vault/ids/product/secret-id
 ```
 
-
+## Thông tin Đăng nhập Mặc định
+* **Admin:** Username: admin, Password: 123456
+* **User:** Username: buithihoa, Password: 123456
+* **User:** Username: huyhoang, Password: 123456
