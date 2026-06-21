@@ -16,7 +16,7 @@ app.use(express.json({
 })); 
 
 const logstashAgent = new https.Agent({
-    ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt') ],
+    ca: [ fs.readFileSync('./certs/ca-bundle.crt') ],
     rejectUnauthorized: true 
 });
 
@@ -31,8 +31,7 @@ let internalHttpsAgent; // Sẽ khởi tạo sau khi có chứng chỉ động
 
 // Agent chuyên dụng để Node.js gọi vào Vault (Vì Vault đang xài mTLS tĩnh)
 const vaultHttpsAgent = new https.Agent({
-    ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt') ],
-    checkServerIdentity: () => undefined 
+    ca: [ fs.readFileSync('./certs/ca-bundle.crt')],
 });
 
 // ==========================================
@@ -124,18 +123,146 @@ function getKey(header, callback) {
   });
 }
 
+function hasRole(user, role) {
+    return Boolean(user && Array.isArray(user.roles) && user.roles.includes(role));
+}
+
+function requireRole(role) {
+    return function(req, res, next) {
+        if (!hasRole(req.user, role)) {
+            return res.status(403).json({ error: `Yeu cau quyen ${role}!` });
+        }
+        next();
+    };
+}
+
+function requireAnyRole(allowedRoles) {
+    return function(req, res, next) {
+        if (!req.user || !Array.isArray(req.user.roles) || !allowedRoles.some(role => req.user.roles.includes(role))) {
+            return res.status(403).json({ error: "Tai khoan khong co quyen thuc hien chuc nang nay!" });
+        }
+        next();
+    };
+}
+
+let userColumnsCache = null;
+async function getUserColumns() {
+    if (userColumnsCache) return userColumnsCache;
+    const { rows } = await pool.query(`
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_name = 'users'
+    `);
+    userColumnsCache = new Map(rows.map(row => [row.column_name, row.data_type]));
+    return userColumnsCache;
+}
+
+async function ensureApplicationUser(user) {
+    const columns = await getUserColumns();
+    const has = name => columns.has(name);
+    const idType = columns.get('id') || '';
+    const username = user.username || user.email || user.keycloakId;
+    const email = user.email || (String(username).includes('@') ? username : `${username}@keycloak.local`);
+    const fullName = user.name || username;
+    const role = hasRole(user, 'admin') ? 'admin' : (hasRole(user, 'customer') ? 'customer' : null);
+
+    if (!role) {
+        throw new Error("Token khong co role nghiep vu hop le");
+    }
+
+    const addField = (fields, values, name, value) => {
+        if (has(name)) {
+            fields.push(name);
+            values.push(value);
+        }
+    };
+
+    const lookupClauses = [];
+    const lookupValues = [];
+    if (has('username')) {
+        lookupValues.push(username);
+        lookupClauses.push(`username = $${lookupValues.length}`);
+    }
+    if (has('email')) {
+        lookupValues.push(email);
+        lookupClauses.push(`email = $${lookupValues.length}`);
+    }
+    if (idType.toLowerCase().includes('uuid')) {
+        lookupValues.push(user.keycloakId);
+        lookupClauses.push(`id = $${lookupValues.length}`);
+    }
+    if (lookupClauses.length > 0) {
+        const existingByIdentity = await pool.query(
+            `SELECT id FROM users WHERE ${lookupClauses.join(' OR ')} LIMIT 1`,
+            lookupValues
+        );
+        if (existingByIdentity.rows.length > 0) return existingByIdentity.rows[0].id;
+    }
+
+    if (idType.toLowerCase().includes('uuid')) {
+        const fields = [];
+        const values = [];
+        addField(fields, values, 'id', user.keycloakId);
+        addField(fields, values, 'username', username);
+        addField(fields, values, 'email', email);
+        addField(fields, values, 'full_name', fullName);
+        addField(fields, values, 'password_hash', 'KEYCLOAK_MANAGED');
+        addField(fields, values, 'role', role);
+        addField(fields, values, 'is_active', true);
+
+        const placeholders = fields.map((_, index) => `$${index + 1}`).join(', ');
+        const updates = fields
+            .filter(field => field !== 'id' && field !== 'password_hash')
+            .map(field => `${field} = EXCLUDED.${field}`)
+            .join(', ');
+        const conflictAction = updates ? `DO UPDATE SET ${updates}` : 'DO NOTHING';
+        const query = `
+            INSERT INTO users (${fields.join(', ')})
+            VALUES (${placeholders})
+            ON CONFLICT (id) ${conflictAction}
+            RETURNING id
+        `;
+        const { rows } = await pool.query(query, values);
+        return rows[0]?.id || user.keycloakId;
+    }
+
+    const fields = [];
+    const values = [];
+    addField(fields, values, 'username', username);
+    addField(fields, values, 'email', email);
+    addField(fields, values, 'full_name', fullName);
+    addField(fields, values, 'password_hash', 'KEYCLOAK_MANAGED');
+    addField(fields, values, 'role', role);
+    addField(fields, values, 'is_active', true);
+    const placeholders = fields.map((_, index) => `$${index + 1}`).join(', ');
+    const { rows } = await pool.query(
+        `INSERT INTO users (${fields.join(', ')}) VALUES (${placeholders}) RETURNING id`,
+        values
+    );
+    return rows[0].id;
+}
+
 function verifyUserContext(req, res, next) {
     const authHeader = req.headers['authorization'];
     if (!authHeader) return res.status(401).json({ error: "Missing Token" });
     const token = authHeader.split(' ')[1];
-    jwt.verify(token, getKey, { algorithms: ['ES256'] }, function(err, decoded) {
+    jwt.verify(token, getKey, { algorithms: ['ES256'] }, async function(err, decoded) {
         if (err) return res.status(401).json({ error: "Invalid or Expired Token" });
-        req.user = { 
-            id: decoded.sub, 
-            username: decoded.preferred_username || 'unknown', 
-            roles: decoded.realm_access?.roles || [] 
-        };
-        next();
+        try {
+            req.user = {
+                id: decoded.sub,
+                keycloakId: decoded.sub,
+                username: decoded.preferred_username || decoded.email || 'unknown',
+                email: decoded.email,
+                name: decoded.name,
+                roles: decoded.realm_access?.roles || []
+            };
+            req.user.id = await ensureApplicationUser(req.user);
+            next();
+        } catch (syncErr) {
+            console.error("[AUTH] Khong the dong bo user tu Keycloak vao DB:", syncErr.message);
+            res.status(500).json({ error: "Khong the dong bo tai khoan nguoi dung voi database" });
+        }
     });
 }
 
@@ -188,7 +315,7 @@ function securityMonitor(req, res, next) {
 // ==========================================
 // D. API ROUTES 
 // ==========================================
-app.post('/api/v1/orders', verifyUserContext, async (req, res) => {
+app.post('/api/v1/orders', verifyUserContext, requireAnyRole(['customer', 'admin']), async (req, res) => {
     try {
         // CHÚ Ý: Cố tình KHÔNG LẤY unit_price và item_name từ req.body nữa!
         const { sku, qty, customer_phone } = req.body;
@@ -250,7 +377,7 @@ app.post('/api/v1/orders', verifyUserContext, async (req, res) => {
     }
 });
 
-app.get('/api/v1/orders', verifyUserContext, async (req, res) => {
+app.get('/api/v1/orders', verifyUserContext, requireAnyRole(['customer', 'admin']), async (req, res) => {
     try {
         const query = 'SELECT * FROM orders WHERE user_id = $1 ORDER BY order_date DESC';
         const { rows } = await pool.query(query, [req.user.id]);
@@ -272,7 +399,7 @@ app.get('/api/v1/orders', verifyUserContext, async (req, res) => {
 });
 
 // User tự hủy đơn hàng của chính mình
-app.patch('/api/v1/orders/:orderId/cancel', verifyUserContext, async (req, res) => {
+app.patch('/api/v1/orders/:orderId/cancel', verifyUserContext, requireAnyRole(['customer', 'admin']), async (req, res) => {
     try {
         // 1. CHỐNG BOLA: Phải Select thêm 'sku' và 'qty' để biết đường hoàn kho
         const checkQuery = 'SELECT status, sku, qty FROM orders WHERE id = $1 AND user_id = $2';
@@ -315,7 +442,7 @@ app.patch('/api/v1/orders/:orderId/cancel', verifyUserContext, async (req, res) 
 });
 
 // User xác nhận đã nhận hàng
-app.patch('/api/v1/orders/:orderId/deliver', verifyUserContext, async (req, res) => {
+app.patch('/api/v1/orders/:orderId/deliver', verifyUserContext, requireAnyRole(['customer', 'admin']), async (req, res) => {
     try {
         // 1. CHỐNG BOLA: Tìm đơn hàng của ĐÚNG user này
         const checkQuery = 'SELECT status, payment_status FROM orders WHERE id = $1 AND user_id = $2';
@@ -346,7 +473,7 @@ app.patch('/api/v1/orders/:orderId/deliver', verifyUserContext, async (req, res)
     }
 });
 
-app.post('/api/v1/profile', verifyUserContext, async (req, res) => {
+app.post('/api/v1/profile', verifyUserContext, requireAnyRole(['customer', 'admin']), async (req, res) => {
     try {
         const { phone, city } = req.body;
         
@@ -381,8 +508,7 @@ app.post('/api/v1/profile', verifyUserContext, async (req, res) => {
 });
 
 // 3. ADMIN: Lấy danh sách Users (Nối đúng kiểu UUID)
-app.get('/api/v1/admin/users', verifyUserContext, async (req, res) => {
-    if (!req.user.roles.includes('admin')) return res.status(403).json({ error: "Yêu cầu quyền Admin!" });
+app.get('/api/v1/admin/users', verifyUserContext, requireRole('admin'), async (req, res) => {
     try {
         // Bỏ ::text đi vì cả 2 cột đều đã là kiểu UUID chuẩn
         const query = `
@@ -407,8 +533,7 @@ app.get('/api/v1/admin/users', verifyUserContext, async (req, res) => {
 });
 
 // 4. ADMIN: Xem chi tiết đơn hàng của 1 User (Giải mã FULL SĐT)
-app.get('/api/v1/admin/orders/:userId', verifyUserContext, async (req, res) => {
-    if (!req.user.roles.includes('admin')) return res.status(403).json({ error: "Forbidden" });
+app.get('/api/v1/admin/orders/:userId', verifyUserContext, requireRole('admin'), async (req, res) => {
     try {
         const query = 'SELECT * FROM orders WHERE user_id = $1 ORDER BY order_date DESC';
         const { rows } = await pool.query(query, [req.params.userId]);
@@ -424,8 +549,7 @@ app.get('/api/v1/admin/orders/:userId', verifyUserContext, async (req, res) => {
 });
 
 // 5. ADMIN: Cập nhật thanh toán
-app.patch('/api/v1/admin/orders/:orderId/payment', verifyUserContext, async (req, res) => {
-    if (!req.user.roles.includes('admin')) return res.status(403).json({ error: "Forbidden" });
+app.patch('/api/v1/admin/orders/:orderId/payment', verifyUserContext, requireRole('admin'), async (req, res) => {
     try {
         const { payment_status } = req.body;
         // 🛡️ BẢO MẬT 3: Chống Mass Assignment / Enum Manipulation
@@ -450,7 +574,16 @@ app.patch('/api/v1/admin/orders/:orderId/payment', verifyUserContext, async (req
 // KHÔNG dùng verifyUserContext ở đây, mà dùng verifyHMACSignature
 app.post('/api/v1/webhook/payment-success', verifyHMACSignature, async (req, res) => {
     try {
-        const { order_id, transaction_id } = req.body;
+        let rawOrderId = req.body.order_id || req.body.orderId;
+        if (rawOrderId && typeof rawOrderId === 'object') {
+            rawOrderId = rawOrderId.order_id || rawOrderId.orderId || rawOrderId.id;
+        }
+
+        const order_id = Number(rawOrderId);
+        if (!Number.isInteger(order_id) || order_id <= 0) {
+            sendLog("WARN", "INVALID_WEBHOOK_ORDER_ID", `Webhook order_id khong hop le: ${JSON.stringify(req.body)}`, req);
+            return res.status(400).json({ error: "Invalid order_id" });
+        }
         
         // Cập nhật trạng thái đơn hàng thành Paid
         const checkQuery = 'SELECT status, payment_status FROM orders WHERE id = $1';
@@ -498,7 +631,7 @@ async function bootstrap() {
         const bundlePath = './certs/order-bundle.json';
         
         while (!fs.existsSync(bundlePath)) {
-            console.log("⏳ Đang chờ Vault Agent cấp chứng chỉ (order-bundle.json)...");
+            console.log("Đang chờ Vault Agent cấp chứng chỉ (order-bundle.json)...");
             await new Promise(res => setTimeout(res, 2000));
         }
 
@@ -513,8 +646,7 @@ async function bootstrap() {
             key: orderKey,
             cert: orderCert,
             // Nạp cả Root CA, Int CA và CA động từ Vault vào
-            ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt'), dynamicCa ],
-            checkServerIdentity: () => undefined, 
+            ca: [ fs.readFileSync('./certs/ca-bundle.crt'), dynamicCa ],
             rejectUnauthorized: true 
         });
 
@@ -522,7 +654,7 @@ async function bootstrap() {
         const options = {
             key: orderKey,
             cert: orderCert,
-            ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt') ],
+            ca: [ fs.readFileSync('./certs/ca-bundle.crt')],
             requestCert: true,
             rejectUnauthorized: true
         };

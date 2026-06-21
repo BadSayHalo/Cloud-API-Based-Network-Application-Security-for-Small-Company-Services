@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Cổng Thanh Toán VNPay (Giả lập)</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #eef2f3; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .payment-card { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); text-align: center; width: 400px; border-top: 5px solid #007bff; }
+        .vnpay-logo { color: #007bff; font-size: 28px; font-weight: bold; margin-bottom: 20px; }
+        .amount { font-size: 32px; color: #dc3545; font-weight: bold; margin: 20px 0; }
+        .btn-pay { background: #007bff; color: white; border: none; padding: 15px 30px; font-size: 18px; border-radius: 8px; width: 100%; cursor: pointer; font-weight: bold; margin-top: 20px; }
+        .btn-pay:hover { background: #0056b3; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; display: none; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="payment-card">
+        <div class="vnpay-logo">MOCK VN-PAY 💸</div>
+        <p>Đơn hàng: <strong id="lblOrderId">Đang tải...</strong></p>
+        <div class="amount" id="lblAmount">0 đ</div>
+        <p style="color: gray; font-size: 14px;">Mô phỏng thanh toán Zero Trust (ECDH mTLS)</p>
+        
+        <button class="btn-pay" id="btnPay" onclick="processPayment()">Xác Nhận Quẹt Thẻ</button>
+        <div class="loader" id="loader"></div>
+        <p id="msg" style="margin-top: 15px; font-weight: bold;"></p>
+        <div id="debugBox" style="display:none; text-align:left; background:#282c34; color:#61dafb; padding:15px; border-radius:8px; font-family:monospace; font-size:12px; margin-top:15px; word-wrap:break-word;">
+            <strong style="color: #deff9a; font-size: 14px;">[Proof of Concept] ECDH Dynamic Key</strong><br><br>
+            <span style="color: #aaa;">Handshake ID:</span><br>
+            <span id="dbgId" style="color: #fff;"></span><br><br>
+            <span style="color: #aaa;">Session HMAC Secret (RAM only):</span><br>
+            <span id="dbgSecret" style="color: #ff9800; font-weight: bold;"></span><br><br>
+            <span style="color: #aaa;">Generated Signature:</span><br>
+            <span id="dbgHmac" style="color: #fff;"></span>
+        </div>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const orderId = urlParams.get('order_id') || urlParams.get('orderId');
+        const amount = urlParams.get('amount');
+
+        document.getElementById('lblOrderId').innerText = "#" + orderId;
+        document.getElementById('lblAmount').innerText = parseInt(amount).toLocaleString('vi-VN') + " đ";
+
+        async function processPayment() {
+            document.getElementById('btnPay').style.display = 'none';
+            document.getElementById('loader').style.display = 'block';
+            
+            try {
+                // Gọi API backend của mock-vnpay để kích hoạt Handshake
+                const res = await fetch('/simulate-success', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ order_id: Number(orderId) })
+                });
+                
+                const data = await res.json();
+                if (res.ok) {
+                    document.getElementById('loader').style.display = 'none';
+                    document.getElementById('msg').style.color = "green";
+                    document.getElementById('msg').innerText = "Thanh toán & Gửi Webhook mTLS thành công!";
+                    
+                    // SHOW BOX DEBUG CHO THẦY XEM
+                    document.getElementById('debugBox').style.display = 'block';
+                    document.getElementById('dbgId').innerText = data.demo_data.handshake_id;
+                    document.getElementById('dbgSecret').innerText = data.demo_data.shared_secret;
+                    document.getElementById('dbgHmac').innerText = data.demo_data.signature;
+
+                    // Tăng delay lên 8 giây để ngắm Key trước khi tự quay về trang chủ
+                    setTimeout(() => window.location.href = "https://longle24520999.kesug.com", 8000);
+                } else {
+                    throw new Error(data.error || "Lỗi giao dịch");
+                }
+            } catch (err) {
+                document.getElementById('loader').style.display = 'none';
+                document.getElementById('btnPay').style.display = 'block';
+                document.getElementById('msg').style.color = "red";
+                document.getElementById('msg').innerText = err.message;
+            }
+        }
+    </script>
+</body>
+</html>

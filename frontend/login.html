@@ -16,7 +16,7 @@
 </head>
 <body>
     <div class="card">
-        <h2>🔒 ĐĂNG NHẬP HỆ THỐNG</h2>
+        <h2>ĐĂNG NHẬP HỆ THỐNG</h2>
         <input type="text" id="username" placeholder="Tên đăng nhập" value="buithihoa">
         <input type="password" id="password" placeholder="Mật khẩu" value="123456">
         
@@ -27,6 +27,22 @@
     </div>
 
     <script>
+        function decodeJwtPayload(token) {
+            const parts = token.split('.');
+            if (parts.length < 2) throw new Error("Token khong hop le");
+
+            let payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+            while (payload.length % 4) payload += '=';
+
+            const json = decodeURIComponent(
+                Array.prototype.map.call(atob(payload), c =>
+                    '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)
+                ).join('')
+            );
+
+            return JSON.parse(json);
+        }
+
         window.onload = () => {
             if (localStorage.getItem('accessToken')) {
                 window.location.href = "/"; 
@@ -43,10 +59,10 @@
             const pass = document.getElementById('password').value;
             const msgBox = document.getElementById('message');
             msgBox.style.color = "#007bff";
-            msgBox.innerText = "⏳ Đang kết nối Keycloak...";
+            msgBox.innerText = "Đang kết nối Keycloak...";
 
             // ĐỔI SANG HTTPS 8443
-            const keycloakUrl = "https://localhost:8443/realms/laptop-store/protocol/openid-connect/token";
+            const keycloakUrl = "https://longle24520999.kesug.com/realms/laptop-store/protocol/openid-connect/token";
             const params = new URLSearchParams();
             params.append('client_id', 'kong-gateway'); 
             params.append('grant_type', 'password');
@@ -63,11 +79,19 @@
                     localStorage.setItem('accessToken', data.access_token);
                     localStorage.setItem('refreshToken', data.refresh_token);
                     
-                    const payload = JSON.parse(atob(data.access_token.split('.')[1]));
+                    const payload = decodeJwtPayload(data.access_token);
                     const roles = payload.realm_access ? payload.realm_access.roles : [];
+
+                    if (!roles.includes('admin') && !roles.includes('customer')) {
+                        localStorage.removeItem('accessToken');
+                        localStorage.removeItem('refreshToken');
+                        msgBox.style.color = "#dc3545";
+                        msgBox.innerText = "Tài khoản chưa được gán role customer/admin trong Keycloak.";
+                        return;
+                    }
                     
                     msgBox.style.color = "#28a745";
-                    msgBox.innerText = "✅ Đăng nhập thành công! Đang chuyển hướng...";
+                    msgBox.innerText = "Đăng nhập thành công! Đang chuyển hướng...";
                     
                     setTimeout(() => {
                         if (roles.includes('admin')) window.location.href = "/admin";
@@ -75,18 +99,18 @@
                     }, 1000);
                 } else {
                     msgBox.style.color = "#dc3545";
-                    msgBox.innerText = "❌ Sai thông tin đăng nhập!";
+                    msgBox.innerText = "Sai thông tin đăng nhập!";
                 }
             } catch (err) {
                 msgBox.style.color = "#dc3545";
-                msgBox.innerText = "❌ Lỗi kết nối: " + err.message;
+                msgBox.innerText = "Lỗi kết nối: " + err.message;
             }
         }
 
         function register() {
             const currentUrl = encodeURIComponent(window.location.href.split('?')[0]);
             // ĐỔI SANG HTTPS 8443
-            const registerUrl = `https://localhost:8443/realms/laptop-store/protocol/openid-connect/registrations?client_id=kong-gateway&response_type=code&scope=openid&redirect_uri=${currentUrl}`;
+            const registerUrl = `https://longle24520999.kesug.com/realms/laptop-store/protocol/openid-connect/registrations?client_id=kong-gateway&response_type=code&scope=openid&redirect_uri=${currentUrl}`;
             window.location.href = registerUrl;
         }
     </script>

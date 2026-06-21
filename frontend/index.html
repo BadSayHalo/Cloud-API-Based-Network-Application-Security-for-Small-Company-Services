@@ -25,6 +25,9 @@
         
         .badge { background: #eee; padding: 5px 10px; border-radius: 5px; font-weight: bold; font-size: 13px; display: inline-block; margin-bottom: 5px; width: 100%; box-sizing: border-box;}
         .product-info-box { background: #e9ecef; border-left: 4px solid #ff9800; padding: 10px 15px; margin: 5px 0 15px 0; border-radius: 4px; font-size: 14px; color: #333;}
+        .inline-alert { padding: 10px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 14px; display: none; }
+        .inline-alert.error { background: #fff0f0; color: #b42318; border: 1px solid #f9d3d4; }
+        .inline-alert.success { background: #edfdf3; color: #067647; border: 1px solid #b7ebc6; }
         
         /* Bảng hiển thị đẹp mắt */
         table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
@@ -42,7 +45,7 @@
     <div class="container">
         <div class="col-left">
             <div class="card" id="profileCard" style="border-left: 4px solid #17a2b8;">
-                <h2 style="color: #17a2b8;">📝 HỒ SƠ CÁ NHÂN (MÃ HÓA AES)</h2>
+                <h2 style="color: #17a2b8;">HỒ SƠ CÁ NHÂN (MÃ HÓA AES)</h2>
                 <div style="display: flex; gap: 10px;">
                     <input type="text" id="userPhone" placeholder="Số điện thoại bảo mật" style="flex: 1;">
                     <input type="text" id="userCity" placeholder="Thành phố" style="flex: 1;">
@@ -54,34 +57,35 @@
             </div>
 
             <div class="card">
-                <h2 class="step-2">🛒 TẠO ĐƠN HÀNG MỚI</h2>
+                <h2 class="step-2">TẠO ĐƠN HÀNG MỚI</h2>
                 <input type="text" id="laptopSku" placeholder="Nhập Mã SKU từ danh sách bên dưới..." oninput="autoFillProduct()">
+                <div id="orderInlineAlert" class="inline-alert"></div>
                 <div class="product-info-box" id="productDisplay">Vui lòng chọn sản phẩm...</div>
                 <div style="display: flex; gap: 10px;">
                     <input type="number" id="laptopQty" placeholder="Số lượng" value="1" min="1" style="flex: 1;">
                     <input type="text" id="customerPhone" placeholder="SĐT Liên hệ (Sẽ được mã hóa)" value="0912345678" style="flex: 2;">
                 </div>
-                <button class="btn-post" onclick="createOrder()">Xác Nhận Đặt Hàng</button>
+                <button id="createOrderBtn" class="btn-post" onclick="createOrder()">Xác Nhận Đặt Hàng</button>
             </div>
         </div>
 
         <div class="col-right">
             <div class="card" style="background: #fff3f3; border: 1px solid #ffcccc; padding-bottom: 10px;">
-                <h2 class="sec-dash">🛡️ SECURITY DASHBOARD</h2>
-                <div class="badge">👤 User: <span id="dash-user" style="color: #007bff;">Đang tải...</span></div>
-                <div class="badge">🎟️ Session ID: <span id="dash-session" style="color: #28a745;">Đang tải...</span></div>
-                <div class="badge">⏳ Hết Hạn: <span id="dash-exp" style="color: #dc3545;">Đang tải...</span></div>
+                <h2 class="sec-dash">SECURITY DASHBOARD</h2>
+                <div class="badge">User: <span id="dash-user" style="color: #007bff;">Đang tải...</span></div>
+                <div class="badge">Session ID: <span id="dash-session" style="color: #28a745;">Đang tải...</span></div>
+                <div class="badge">Hết Hạn: <span id="dash-exp" style="color: #dc3545;">Đang tải...</span></div>
             </div>
 
             <div class="card" style="padding: 0; background: #282c34;">
-                <h2 style="color: white; border-bottom-color: #666; padding: 15px; margin: 0;">🖥️ LOGS (DEBUG)</h2>
+                <h2 style="color: white; border-bottom-color: #666; padding: 15px; margin: 0;">LOGS (DEBUG)</h2>
                 <pre id="result">Hệ thống sẵn sàng...</pre>
             </div>
         </div>
 
         <div class="col-full">
             <div class="card">
-                <h2 style="color: #6f42c1; border-color: #6f42c1;">💻 DANH SÁCH SẢN PHẨM HIỆN CÓ</h2>
+                <h2 style="color: #6f42c1; border-color: #6f42c1;">DANH SÁCH SẢN PHẨM HIỆN CÓ</h2>
                 <table>
                     <thead>
                         <tr>
@@ -101,8 +105,8 @@
         <div class="col-full">
             <div class="card">
                 <h2 class="step-3" style="display: flex; justify-content: space-between; align-items: center;">
-                    📦 LỊCH SỬ ĐƠN HÀNG CỦA TÔI
-                    <button class="btn-get btn-sm" onclick="fetchOrders()" style="width: 150px; margin: 0;">🔄 Làm Mới</button>
+                    LỊCH SỬ ĐƠN HÀNG CỦA TÔI
+                    <button class="btn-get btn-sm" onclick="fetchOrders()" style="width: 150px; margin: 0;">Làm Mới</button>
                 </h2>
                 <table>
                     <thead>
@@ -126,6 +130,22 @@
     </div>
 
     <script>
+        function decodeJwtPayload(token) {
+            const parts = token.split('.');
+            if (parts.length < 2) throw new Error("Token khong hop le");
+
+            let payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+            while (payload.length % 4) payload += '=';
+
+            const json = decodeURIComponent(
+                Array.prototype.map.call(atob(payload), c =>
+                    '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)
+                ).join('')
+            );
+
+            return JSON.parse(json);
+        }
+
         // ==========================================
         // 1. KIỂM TRA ĐĂNG NHẬP & BẢO MẬT
         // ==========================================
@@ -141,8 +161,16 @@
         function updateDashboardInfo() {
             try {
                 const token = getAccessToken();
-                const payload = JSON.parse(atob(token.split('.')[1]));
+                const payload = decodeJwtPayload(token);
                 const expTime = new Date(payload.exp * 1000); 
+                const roles = payload.realm_access ? payload.realm_access.roles : [];
+
+                if (!roles.includes('customer') && !roles.includes('admin')) {
+                    localStorage.clear();
+                    alert("Tài khoản chưa được gán role customer/admin trong Keycloak.");
+                    window.location.href = "/login";
+                    return;
+                }
                 
                 document.getElementById('dash-user').innerText = payload.preferred_username || payload.email || 'User';
                 document.getElementById('dash-session').innerText = payload.sid;
@@ -158,6 +186,19 @@
             res.innerText = msg;
         }
 
+        function setOrderInlineAlert(message, type = "error") {
+            const alertEl = document.getElementById('orderInlineAlert');
+            alertEl.className = `inline-alert ${type}`;
+            alertEl.innerText = message;
+            alertEl.style.display = 'block';
+        }
+
+        function clearOrderInlineAlert() {
+            const alertEl = document.getElementById('orderInlineAlert');
+            alertEl.style.display = 'none';
+            alertEl.innerText = '';
+        }
+
         // ==========================================
         // TÍNH NĂNG AUTO-REFRESH TOKEN VỚI FETCH
         // ==========================================
@@ -170,7 +211,7 @@
 
             // Nếu Backend báo 401 (Hết hạn Access Token)
             if (response.status === 401) {
-                console.log("⏳ Token hết hạn, đang tự động gia hạn ngầm...");
+                console.log("Token hết hạn, đang tự động gia hạn ngầm...");
                 const rToken = getRefreshToken();
                 
                 if (!rToken) {
@@ -180,13 +221,13 @@
 
                 // Gọi Keycloak xin Token mới
                 const params = new URLSearchParams({
-                    client_id: 'frontend-app', // Tên client của bạn trong Keycloak
+                    client_id: 'kong-gateway', // Khớp với client đang dùng ở login.html
                     grant_type: 'refresh_token',
                     refresh_token: rToken
                 });
 
                 try {
-                    const refreshRes = await fetch("https://localhost:8443/realms/laptop-store/protocol/openid-connect/token", {
+                    const refreshRes = await fetch("https://longle24520999.kesug.com/realms/laptop-store/protocol/openid-connect/token", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                         body: params
@@ -198,7 +239,7 @@
                         localStorage.setItem('accessToken', data.access_token);
                         localStorage.setItem('refreshToken', data.refresh_token);
                         
-                        console.log("✅ Gia hạn Token thành công! Đang gọi lại API...");
+                        console.log("Gia hạn Token thành công! Đang gọi lại API...");
                         updateDashboardInfo(); // Cập nhật lại thời gian trên giao diện
 
                         // Gắn Token mới và gọi lại API bị tịt ban nãy
@@ -230,7 +271,7 @@
             
             try {
                 // Dùng fetchWithAuth thay vì fetch
-                const response = await fetchWithAuth("https://localhost:8443/api/v1/products", {
+                const response = await fetchWithAuth("https://longle24520999.kesug.com/api/v1/products", {
                     method: 'GET'
                 });
                 
@@ -265,14 +306,14 @@
                             </tr>
                         `;
                     });
-                    logResult("✅ Đã tải danh sách sản phẩm từ CSDL thành công!", "#28a745");
+                    logResult(" Đã tải danh sách sản phẩm từ CSDL thành công!", "#28a745");
                 } else {
                     tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: red;">Lỗi tải dữ liệu sản phẩm</td></tr>';
-                    logResult(`❌ Lỗi API Product: ${resData.error}`, "#ff4757");
+                    logResult(`Lỗi API Product: ${resData.error}`, "#ff4757");
                 }
             } catch (err) {
                 tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: red;">Lỗi kết nối máy chủ</td></tr>';
-                logResult("❌ Lỗi mạng (Product API): " + err.message, "#ff4757");
+                logResult("Lỗi mạng (Product API): " + err.message, "#ff4757");
             }
         }
 
@@ -285,19 +326,32 @@
         function autoFillProduct() {
             const skuInput = document.getElementById('laptopSku').value.trim().toUpperCase();
             const displayBox = document.getElementById('productDisplay');
+            const createBtn = document.getElementById('createOrderBtn');
             
             if (globalDatabase[skuInput]) {
                 const product = globalDatabase[skuInput];
                 currentItemName = product.name; 
                 currentUnitPrice = product.price;
-                
-                displayBox.innerHTML = `✅ Sản phẩm: <strong>${product.name}</strong> <br> 💰 Đơn giá: <strong>${parseFloat(product.price).toLocaleString('vi-VN')} VNĐ</strong> <br> 📦 Tồn kho: ${product.stock}`;
-                displayBox.style.borderLeftColor = "#28a745";
+                if (product.stock <= 0) {
+                    displayBox.innerHTML = `Sản phẩm: <strong>${product.name}</strong> <br> 💰 Đơn giá: <strong>${parseFloat(product.price).toLocaleString('vi-VN')} VNĐ</strong> <br> 📦 Trạng thái: <strong style="color:#dc3545;">Hết hàng</strong>`;
+                    displayBox.style.borderLeftColor = "#dc3545";
+                    createBtn.disabled = true;
+                    createBtn.style.backgroundColor = "gray";
+                    setOrderInlineAlert("Sản phẩm đã hết hàng. Vui lòng chọn SKU khác.", "error");
+                } else {
+                    displayBox.innerHTML = `Sản phẩm: <strong>${product.name}</strong> <br> 💰 Đơn giá: <strong>${parseFloat(product.price).toLocaleString('vi-VN')} VNĐ</strong> <br> 📦 Tồn kho: ${product.stock}`;
+                    displayBox.style.borderLeftColor = "#28a745";
+                    createBtn.disabled = false;
+                    createBtn.style.backgroundColor = "";
+                    clearOrderInlineAlert();
+                }
             } else {
                 currentItemName = ""; 
                 currentUnitPrice = 0;
-                displayBox.innerHTML = `⚠️ Không tìm thấy sản phẩm. Vui lòng chọn từ bảng bên dưới.`;
+                displayBox.innerHTML = ` Không tìm thấy sản phẩm. Vui lòng chọn từ bảng bên dưới.`;
                 displayBox.style.borderLeftColor = "#dc3545";
+                createBtn.disabled = false;
+                createBtn.style.backgroundColor = "";
             }
         }
 
@@ -305,16 +359,17 @@
         // 3. API TƯƠNG TÁC ĐƠN HÀNG (KONG GATEWAY)
         // ==========================================
         async function createOrder() {
-            if (!currentItemName) return logResult("⚠️ LỖI: Mã SKU không hợp lệ!", "#ff4757");
+            if (!currentItemName) return logResult(" LỖI: Mã SKU không hợp lệ!", "#ff4757");
             const data = {
                 sku: document.getElementById('laptopSku').value.toUpperCase(),
                 qty: document.getElementById('laptopQty').value,
                 customer_phone: document.getElementById('customerPhone').value
             };
-            logResult("⏳ Đang tạo đơn hàng qua Kong Gateway...");
+            clearOrderInlineAlert();
+            logResult("Đang tạo đơn hàng qua Kong Gateway...");
             try {
                 // Dùng fetchWithAuth
-                const response = await fetchWithAuth("https://localhost:8443/api/v1/orders", {
+                const response = await fetchWithAuth("https://longle24520999.kesug.com/api/v1/orders", {
                     method: 'POST', 
                     headers: { 'Content-Type': 'application/json' }, 
                     body: JSON.stringify(data)
@@ -326,8 +381,18 @@
                     document.getElementById('laptopSku').value = "";
                     autoFillProduct();
                     fetchOrders(); 
+                    renderCatalog();
+                    setOrderInlineAlert("Đặt hàng thành công.", "success");
+                } else {
+                    const errorText = (resData.error || "").toLowerCase();
+                    if ((response.status === 400 || response.status === 409) &&
+                        (errorText.includes("hết hàng") || errorText.includes("không đủ") || errorText.includes("tồn kho"))) {
+                        setOrderInlineAlert("Sản phẩm đã hết hàng hoặc không đủ số lượng tồn kho.", "error");
+                        await renderCatalog();
+                        autoFillProduct();
+                    }
                 }
-            } catch (err) { logResult("❌ Lỗi: " + err.message, "#ff4757"); }
+            } catch (err) { logResult("Lỗi: " + err.message, "#ff4757"); }
         }
 
         function getStatusBadge(status) {
@@ -339,13 +404,13 @@
         }
 
         async function fetchOrders() {
-            logResult("⏳ Đang tải đơn hàng...");
+            logResult("Đang tải đơn hàng...");
             const tbody = document.getElementById('ordersTable');
             tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">Đang tải...</td></tr>';
             
             try {
                 // Dùng fetchWithAuth
-                const response = await fetchWithAuth("https://localhost:8443/api/v1/orders", { 
+                const response = await fetchWithAuth("https://longle24520999.kesug.com/api/v1/orders", { 
                     method: 'GET'
                 });
                 const resData = await response.json();
@@ -354,19 +419,19 @@
                     tbody.innerHTML = "";
                     if (resData.data.length === 0) {
                         tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">Bạn chưa có đơn hàng nào!</td></tr>';
-                        return logResult("✅ Tải dữ liệu thành công (Trống)", "#28a745");
+                        return logResult("Tải dữ liệu thành công (Trống)", "#28a745");
                     }
 
                     resData.data.forEach(order => {
                         const totalAmount = order.qty * order.unit_price; 
                         let actionButtons = "";
                         if (order.status !== 'Cancelled' && order.payment_status === 'Unpaid') {
-                            actionButtons += `<button class="btn-logout btn-sm" onclick="processOrderAction(${order.order_id}, 'cancel')">❌ Hủy</button>`;
+                            actionButtons += `<button class="btn-logout btn-sm" onclick="processOrderAction(${order.order_id}, 'cancel')">Hủy</button>`;
                             actionButtons += `<button class="btn-blue btn-sm" onclick="redirectToPayment(${order.order_id}, ${totalAmount})" style="margin-left: 5px; background-color: #007bff;">💳 Thanh toán</button>`;
                         }
 
                         if (order.status === 'Processing' && order.payment_status === 'Paid') {
-                            actionButtons += `<button class="btn-get btn-sm" onclick="processOrderAction(${order.order_id}, 'deliver')">📦 Nhận hàng</button>`;
+                            actionButtons += `<button class="btn-get btn-sm" onclick="processOrderAction(${order.order_id}, 'deliver')">Nhận hàng</button>`;
                         }
 
                         tbody.innerHTML += `
@@ -384,13 +449,13 @@
                             </tr>
                         `;
                     });
-                    logResult("✅ Đã cập nhật bảng danh sách đơn hàng!", "#28a745");
+                    logResult(" Đã cập nhật bảng danh sách đơn hàng!", "#28a745");
                 } else {
                     tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: red;">Lỗi tải dữ liệu</td></tr>';
-                    logResult(`❌ Lỗi API: ${resData.error}`, "#ff4757");
+                    logResult(`Lỗi API: ${resData.error}`, "#ff4757");
                 }
             } catch (err) { 
-                logResult("❌ Lỗi mạng: " + err.message, "#ff4757"); 
+                logResult("Lỗi mạng: " + err.message, "#ff4757"); 
             }
         }
 
@@ -400,41 +465,41 @@
             logResult(`⏳ Đang xử lý yêu cầu ${action} cho đơn #${orderId}...`);
             try {
                 // Dùng fetchWithAuth
-                const response = await fetchWithAuth(`https://localhost:8443/api/v1/orders/${orderId}/${action}`, {
+                const response = await fetchWithAuth(`https://longle24520999.kesug.com/api/v1/orders/${orderId}/${action}`, {
                     method: 'PATCH'
                 });
                 const resData = await response.json();
                 if (response.ok) {
-                    logResult(`✅ ${resData.message}`, "#28a745");
+                    logResult(`${resData.message}`, "#28a745");
                     fetchOrders(); 
                 } else {
-                    logResult(`❌ ${resData.error}`, "#ff4757");
+                    logResult(`${resData.error}`, "#ff4757");
                 }
-            } catch (err) { logResult("❌ Lỗi: " + err.message, "#ff4757"); }
+            } catch (err) { logResult("Lỗi: " + err.message, "#ff4757"); }
         }
 
         async function updateProfile() {
-            logResult("⏳ Đang cập nhật hồ sơ...");
+            logResult("Đang cập nhật hồ sơ...");
             const data = { phone: document.getElementById('userPhone').value, city: document.getElementById('userCity').value };
             try {
                 // Dùng fetchWithAuth
-                const response = await fetchWithAuth("https://localhost:8443/api/v1/profile", {
+                const response = await fetchWithAuth("https://longle24520999.kesug.com/api/v1/profile", {
                     method: 'POST', 
                     headers: { 'Content-Type': 'application/json' }, 
                     body: JSON.stringify(data)
                 });
                 const resData = await response.json();
-                logResult(response.ok ? `✅ ${resData.message}` : `❌ Lỗi: ${resData.error}`, response.ok ? "#28a745" : "#ff4757");
-            } catch (err) { logResult("❌ Lỗi: " + err.message, "#ff4757"); }
+                logResult(response.ok ? `${resData.message}` : `Lỗi: ${resData.error}`, response.ok ? "#28a745" : "#ff4757");
+            } catch (err) { logResult("Lỗi: " + err.message, "#ff4757"); }
         }
 
         async function logout() {
             const rToken = getRefreshToken();
             if (rToken) {
-                logResult("⏳ Đang đăng xuất khỏi Keycloak...");
-                const params = new URLSearchParams({ client_id: 'frontend-app', refresh_token: rToken });
+                logResult("Đang đăng xuất khỏi Keycloak...");
+                const params = new URLSearchParams({ client_id: 'kong-gateway', refresh_token: rToken });
                 try {
-                    await fetch("https://localhost:8443/realms/laptop-store/protocol/openid-connect/logout", {
+                    await fetch("https://longle24520999.kesug.com/realms/laptop-store/protocol/openid-connect/logout", {
                         method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params
                     });
                 } catch (e) { console.error("Lỗi đăng xuất Keycloak", e); }
@@ -449,10 +514,10 @@
         };
 
         function redirectToPayment(orderId, amount) { 
-            logResult(`⏳ Đang kết nối tới Cổng thanh toán VNPay cho đơn hàng #${orderId} (Tổng: ${amount.toLocaleString('vi-VN')} đ)...`);
+            logResult(`Đang kết nối tới Cổng thanh toán VNPay cho đơn hàng #${orderId} (Tổng: ${amount.toLocaleString('vi-VN')} đ)...`);
             
             setTimeout(() => {
-                window.location.href = `https://localhost:4001/pay?orderId=${orderId}&amount=${amount}`;
+                window.location.href = `https://4.194.5.44:4001/checkout?orderId=${orderId}&order_id=${orderId}&amount=${amount}`;
             }, 1000);
         }
     </script>

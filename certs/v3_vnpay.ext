@@ -1,15 +1,12 @@
 basicConstraints = critical, CA:FALSE
 keyUsage = critical, digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
-extendedKeyUsage = serverAuth, clientAuth
+extendedKeyUsage = serverAuth
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid,issuer
-authorityInfoAccess = caIssuers;URI:http://localhost/download-int
 subjectAltName = @alt_names
 
 [ alt_names ]
-DNS.1 = kong-api
+DNS.1 = mock-vnpay
 DNS.2 = localhost
-DNS.3 = logstash
-DNS.4 = elasticsearch
-DNS.5 = kibana
+DNS.3 = longle24520999.kesug.com
 IP.1 = 127.0.0.1

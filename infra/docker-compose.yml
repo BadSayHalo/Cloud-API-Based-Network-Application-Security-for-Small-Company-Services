@@ -3,27 +3,35 @@ services:
   kong:
     image: kong:3.4-ubuntu
     container_name: kong-api
+    entrypoint: ["/bin/sh", "/scripts/start.sh"]
     volumes:
       - ../gateway/kong.yml:/usr/local/kong/declarative/kong.yml
-      - ../certs:/certs
+      - ../certs:/certs:ro
+      - ./start.sh:/scripts/start.sh:ro
+    env_file:
+      - .env
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /usr/local/kong/declarative/kong.yml
       KONG_DECLARATIVE_CONFIG_STRING_INTERPOLATION: "true"
       KONG_VNPAY_SECRET: ${KONG_VNPAY_SECRET}
-      # CẬP NHẬT 1: Báo cho Kong biết phải lắng nghe thêm cổng 8443 có bọc SSL
+      # SSL
       KONG_PROXY_LISTEN: 0.0.0.0:8000, 0.0.0.0:8443 ssl
       KONG_ADMIN_LISTEN: 0.0.0.0:8001
       # CẬP NHẬT 2: Trỏ thẳng chứng chỉ ECC (mTLS) của Kong vào để nó làm SSL Termination
-      KONG_SSL_CERT: /certs/kong-bundle.crt
-      KONG_SSL_CERT_KEY: /certs/kong.key
-
+      KONG_SSL_CERT: /certs/kong-public.crt
       KONG_CLIENT_SSL: "on"
-      KONG_CLIENT_SSL_CERT: /certs/kong-bundle.crt
-      KONG_CLIENT_SSL_CERT_KEY: /certs/kong.key
+      KONG_CLIENT_SSL_CERT: /certs/kong-internal-bundle.crt
+
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 128k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: "8 128k"
+      KONG_NGINX_PROXY_PROXY_BUSY_BUFFERS_SIZE: 256k
+      KONG_NGINX_PROXY_CLIENT_HEADER_BUFFER_SIZE: 64k
+      KONG_NGINX_PROXY_LARGE_CLIENT_HEADER_BUFFERS: "8 64k"
+
     ports:
-      - "8000:8000"
-      - "8443:8443" # CẬP NHẬT 3: Mở cổng HTTPS ra ngoài máy Host
+      - "80:8000"
+      - "443:8443" # CẬP NHẬT 3: Mở cổng HTTPS ra ngoài máy Host
       - "127.0.0.1:8001:8001"
     networks:
       - capstone-net
@@ -39,7 +47,6 @@ services:
     depends_on:
       - kong
 
-
   # 3. BACKEND SERVICE
   order-service:
     build: ../services/order-service
@@ -51,8 +58,6 @@ services:
     environment:
       PORT: 3000
       VAULT_ADDR: "https://vault-server:8200"
-      #VAULT_TOKEN: "my-root-token"
-      #WEBHOOK_SECRET: "day-la-key-sieu-bao-mat-moi" # Dùng cho HMAC
     depends_on:
       - vault
     volumes:
@@ -69,10 +74,9 @@ services:
     environment:
       PORT: 3001
       VAULT_ADDR: "https://vault-server:8200"
-      #DATABASE_URL: ${DATABASE_URL} # Nếu dùng Vault thì có thể bỏ dòng này trong Compose
     volumes:
       - ../certs:/app/certs
-      - vault-token-share:/app/vault-token-share # Quan trọng: Để lấy token từ Vault Agent
+      - vault-token-share:/app/vault-token-share
     networks:
       - capstone-net
     depends_on:
@@ -105,7 +109,7 @@ services:
     environment:
       KC_PROXY: edge
       # CẬP NHẬT 1: Ép các đường link Keycloak tạo ra (như link Login) phải dùng HTTPS cổng 8443 của Kong
-      KC_HOSTNAME_URL: https://localhost:8443
+      KC_HOSTNAME_URL: https://longle24520999.kesug.com
       KC_HOSTNAME_ADMIN_URL: http://localhost:8080
       # CẬP NHẬT 2: Bảo mật tài khoản Admin bằng cách đọc từ file .env
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USER}
@@ -140,9 +144,16 @@ services:
     #  - "8200:8200"
     expose:
       - "8200"
+    env_file:
+      - .env      # Load file env vào Vault
+    environment:
+      VAULT_KEY_PASS: ${VAULT_KEY_PASS}
     volumes:
       - ./vault-config.hcl:/vault/config/vault-config.hcl:ro
       - ../certs:/vault/certs:ro
+      - ./start-vault.sh:/scripts/start-vault.sh:ro
+    # Chạy lệnh server với file cấu hình thay vì dev mode
+    entrypoint: ["/bin/sh", "/scripts/start-vault.sh"]
     # Chạy lệnh server với file cấu hình thay vì dev mode
     command: vault server -config=/vault/config/vault-config.hcl
     cap_add:
@@ -194,13 +205,16 @@ services:
   logstash:
     image: docker.elastic.co/logstash/logstash:8.11.1
     container_name: logstash
+    restart: on-failure
+    env_file:
+      - .env
     volumes:
       - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf
       - ../certs:/certs:ro
-    #ports:
-    #  - "5044:5044"
-    expose:
-      - "5044"
+    ports:
+      - "127.0.0.1:5044:5044"
+    #expose:
+    #  - "5044"
     depends_on:
       - elasticsearch
     networks:
@@ -209,13 +223,16 @@ services:
   kibana:
     image: docker.elastic.co/kibana/kibana:8.11.1
     container_name: kibana
+    restart: on-failure
     ports:
       - "127.0.0.1:5601:5601"
+    env_file:
+      - .env
     environment:
-      # 👇 THÊM 3 DÒNG NÀY ĐỂ BẬT HTTPS
       - SERVER_SSL_ENABLED=true
-      - SERVER_SSL_CERTIFICATE=/certs/kong-bundle.crt
-      - SERVER_SSL_KEY=/certs/kong.key
+      - SERVER_SSL_CERTIFICATE=/certs/kong-internal-bundle.crt
+      - SERVER_SSL_KEY=/certs/kong-internal.key
+      - SERVER_SSL_KEYPASSPHRASE=${KONG_KEY_PASS}
     volumes:
       - ../certs:/certs:ro
     depends_on:

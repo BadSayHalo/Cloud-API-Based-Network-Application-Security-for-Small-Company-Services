@@ -1,37 +1,74 @@
 _format_version: "3.0"
- 
+
 services:
   # ==========================================
   # 1. ORDER-SERVICE BACKEND
   # ==========================================
   - name: order-service-backend
-    url: https://backend-order-api:3000
+    url: https://172.31.22.166:3000
     routes:
       - name: fetch-orders
         paths:
           - /api/v1/orders
           - /api/v1/admin
-          - /api/v1/profile 
+          - /api/v1/profile
+          - /api/v1/payment/create
         strip_path: false
         plugins:
           - name: request-size-limiting
             config:
               allowed_payload_size: 1
- 
+
           - name: pre-function
             config:
               access:
                 - |
                   ngx.req.read_body()
-                  local req_body = ngx.req.get_body_data() or ""
-                  local req_uri  = ngx.var.request_uri      or ""
-                  local check_target = string.upper(req_body .. " " .. req_uri)
- 
+
+                  local function normalize(s)
+                    s = s or ""
+                    for _ = 1, 2 do
+                      local ok, decoded = pcall(ngx.unescape_uri, s)
+                      if ok and decoded and decoded ~= s then
+                        s = decoded
+                      else
+                        break
+                      end
+                    end
+                    s = string.gsub(s, "%+", " ")
+                    return string.upper(s)
+                  end
+
+                  local req_body = normalize(ngx.req.get_body_data() or "")
+                  local req_uri = normalize(ngx.var.request_uri or "")
+
+                  local args_text = ""
+                  local args = ngx.req.get_uri_args()
+                  for k, v in pairs(args) do
+                    args_text = args_text .. " " .. normalize(k)
+                    if type(v) == "table" then
+                      for _, item in ipairs(v) do
+                        args_text = args_text .. " " .. normalize(item)
+                      end
+                    else
+                      args_text = args_text .. " " .. normalize(v)
+                    end
+                  end
+
+                  local check_target = req_body .. " " .. req_uri .. " " .. args_text
+
                   local patterns = {
-                    "OR%s+1=1", "UNION%s+SELECT", "DROP%s+TABLE", 
-                    "<SCRIPT", "ALERT%s*%(", "%.%./", "169%.254%.169%.254"
+                    "OR%s+1%s*=%s*1",
+                    "UNION%s+SELECT",
+                    "DROP%s+TABLE",
+                    "<%s*SCRIPT",
+                    "ALERT%s*%(",
+                    "%.%.%/",
+                    "%.%.\\",
+                    "/ETC/PASSWD",
+                    "169%.254%.169%.254"
                   }
- 
+
                   for _, pattern in ipairs(patterns) do
                     if string.find(check_target, pattern) then
                       ngx.status = 403
@@ -41,52 +78,94 @@ services:
                       return ngx.exit(ngx.status)
                     end
                   end
- 
+
           - name: jwt
             config:
               claims_to_verify:
                 - exp
- 
+
           - name: rate-limiting
             config:
               minute: 20
               policy: local
- 
-      # --- Webhook route ---
-      - name: payment-webhook
+
+      # Public endpoint for mock VNPay to create ECDH handshake with order-service.
+      - name: auth-handshake
         paths:
-          - /api/v1/webhook
+          - /api/v1/auth/handshake
         strip_path: false
         plugins:
-          - name: hmac-auth
-            config:
-              enforce_headers:
-                - date
-                - request-line
-              algorithms:
-                - hmac-sha256
- 
           - name: rate-limiting
             config:
               minute: 60
               policy: local
- 
+
+      # Webhook signature is verified by order-service using ECDH handshake data.
+      # Kong keeps payload-size/rate/WAF checks only.
+      - name: payment-webhook
+        paths:
+          - /api/v1/webhook/payment-success
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 60
+              policy: local
+
           - name: request-size-limiting
             config:
               allowed_payload_size: 1
- 
+
           - name: pre-function
             config:
               access:
                 - |
                   ngx.req.read_body()
-                  local req_body = ngx.req.get_body_data() or ""
-                  local req_uri  = ngx.var.request_uri      or ""
-                  local check_target = string.upper(req_body .. " " .. req_uri)
+
+                  local function normalize(s)
+                    s = s or ""
+                    for _ = 1, 2 do
+                      local ok, decoded = pcall(ngx.unescape_uri, s)
+                      if ok and decoded and decoded ~= s then
+                        s = decoded
+                      else
+                        break
+                      end
+                    end
+                    s = string.gsub(s, "%+", " ")
+                    return string.upper(s)
+                  end
+
+                  local req_body = normalize(ngx.req.get_body_data() or "")
+                  local req_uri = normalize(ngx.var.request_uri or "")
+
+                  local args_text = ""
+                  local args = ngx.req.get_uri_args()
+                  for k, v in pairs(args) do
+                    args_text = args_text .. " " .. normalize(k)
+                    if type(v) == "table" then
+                      for _, item in ipairs(v) do
+                        args_text = args_text .. " " .. normalize(item)
+                      end
+                    else
+                      args_text = args_text .. " " .. normalize(v)
+                    end
+                  end
+
+                  local check_target = req_body .. " " .. req_uri .. " " .. args_text
+
                   local patterns = {
-                    "OR%s+1=1", "UNION%s+SELECT", "DROP%s+TABLE",
-                    "<SCRIPT", "ALERT%s*%(", "%.%./", "169%.254%.169%.254"
+                    "OR%s+1%s*=%s*1",
+                    "UNION%s+SELECT",
+                    "DROP%s+TABLE",
+                    "<%s*SCRIPT",
+                    "ALERT%s*%(",
+                    "%.%.%/",
+                    "%.%.\\",
+                    "/ETC/PASSWD",
+                    "169%.254%.169%.254"
                   }
+
                   for _, pattern in ipairs(patterns) do
                     if string.find(check_target, pattern) then
                       ngx.status = 403
@@ -96,12 +175,12 @@ services:
                       return ngx.exit(ngx.status)
                     end
                   end
- 
+
   # ==========================================
-  # 2. PRODUCT-SERVICE (public catalog)
+  # 2. PRODUCT-SERVICE
   # ==========================================
   - name: product-service-backend
-    url: https://backend-product-api:3001
+    url: https://172.31.22.166:3001
     routes:
       - name: fetch-products
         paths:
@@ -112,30 +191,48 @@ services:
             config:
               minute: 60
               policy: local
- 
+
+      - name: admin-products
+        paths:
+          - /api/v1/admin/products
+        strip_path: false
+        plugins:
+          - name: jwt
+            config:
+              claims_to_verify:
+                - exp
+
+          - name: rate-limiting
+            config:
+              minute: 60
+              policy: local
+
   # ==========================================
-  # 3. KEYCLOAK (ĐÃ SỬA THEO COMPOSE)
+  # 3. KEYCLOAK
   # ==========================================
   - name: keycloak-service
-    url: http://keycloak-idp:8080
+    url: http://172.31.4.147:8080
     routes:
-      - name: keycloak-login-api
+      - name: keycloak-static-route
         paths:
-          - /realms/laptop-store/protocol/openid-connect/token
+          - /js
+          - /resources
         strip_path: false
+        preserve_host: true
+
+      - name: keycloak-public-route
+        paths:
+          - /realms
+        strip_path: false
+        preserve_host: true
         plugins:
           - name: rate-limiting
             config:
-              minute: 5
+              minute: 30
               policy: local
- 
-      - name: keycloak-auth-route
-        paths:
-          - /realms
-          - /resources
-          - /js
-        strip_path: false
- 
+              fault_tolerant: true
+              hide_client_headers: false
+
   # ==========================================
   # 4. FRONTEND
   # ==========================================
@@ -146,17 +243,17 @@ services:
         paths:
           - /
         strip_path: false
- 
-# ==========================================
-# GLOBAL PLUGINS
-# ==========================================
+
 plugins:
   - name: cors
     config:
       origins:
         - "http://localhost:4000"
         - "http://localhost:8000"
-        - "https://localhost:8443" # Thêm URL HTTPS của Kong vào CORS
+        - "http://localhost:8080"
+        - "http://localhost:4001"
+        - "https://4.194.5.44:4001"
+        - "https://longle24520999.kesug.com"
       methods:
         - GET
         - POST
@@ -172,32 +269,29 @@ plugins:
         - Content-Type
         - Date
         - Authorization
+        - X-Handshake-Id
+        - X-Webhook-Signature
       exposed_headers:
         - X-Auth-Token
+        - X-Kong-Block-Reason
       credentials: true
       max_age: 3600
- 
+
   - name: http-log
     config:
-      http_endpoint: "http://logstash:5044" # Container name và port chuẩn theo compose
+      http_endpoint: "https://logstash:5044"
       method: "POST"
       timeout: 3000
       keepalive: 1000
       flush_timeout: 2
       retry_count: 3
- 
+
 consumers:
   - username: "keycloak-issuer"
     jwt_secrets:
-      - key: "http://localhost:8443/realms/laptop-store"
+      - key: "https://longle24520999.kesug.com/realms/laptop-store"
         algorithm: ES256
         rsa_public_key: |
           -----BEGIN PUBLIC KEY-----
-          MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAESyniahnHumHiGzbUXyFpicO8PX74
-          YaXQLTJfDOV7ga2DlnbgX5oP7bkvDGEiq0T1ImtarQgL2dZJY5y4G0Y77w==
+          MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAESyniahnHumHiGzbUXyFpicO8PX74YaXQLTJfDOV7ga2DlnbgX5oP7bkvDGEiq0T1ImtarQgL2dZJY5y4G0Y77w==
           -----END PUBLIC KEY-----
- 
-  - username: "vnpay-partner"
-    hmacauth_credentials:
-      - username: "vnpay-partner"
-        secret: "${KONG_VNPAY_SECRET}"

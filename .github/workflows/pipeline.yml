@@ -174,4 +174,3 @@ jobs:
             /tmp/trivy-order.json
             /tmp/trivy-product.json
           retention-days: 30
-

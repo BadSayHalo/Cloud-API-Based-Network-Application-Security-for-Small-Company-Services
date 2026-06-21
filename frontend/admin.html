@@ -43,6 +43,11 @@
         table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         th, td { padding: 15px; text-align: left; border-bottom: 1px solid #333; }
         th { color: var(--primary); text-transform: uppercase; font-size: 13px; }
+        input, select { background: #2a2a40; color: #fff; border: 1px solid #444; padding: 10px; border-radius: 6px; }
+        .control-row { display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: 10px; align-items: center; margin-top: 12px; }
+        .inline-msg { margin-top: 10px; padding: 10px; border-radius: 6px; font-size: 14px; display: none; }
+        .inline-msg.ok { background: #143d28; color: #93f5b9; border: 1px solid #2f9e60; }
+        .inline-msg.err { background: #4a1f24; color: #ffc7cc; border: 1px solid #a3404b; }
 
         tr:hover { background: rgba(255, 255, 255, 0.05); cursor: pointer; transition: 0.2s; }
 
@@ -66,7 +71,7 @@
 <body>
 
     <div class="sidebar">
-        <h2>🛡️ Admin Panel</h2>
+        <h2>Admin Panel</h2>
         <hr style="border: 0.5px solid #444">
         <p>Phiên làm việc: <br><span id="admin-name" style="color:var(--accent)">Đang tải...</span></p>
         <button onclick="logout()" style="background:var(--primary); width:100%">Đăng xuất</button>
@@ -77,7 +82,7 @@
 
         <!-- Danh sách Users -->
         <div class="card">
-            <h3>👥 Quản lý người dùng</h3>
+            <h3> Quản lý người dùng</h3>
             <table>
                 <thead>
                     <tr>
@@ -93,9 +98,35 @@
             </table>
         </div>
 
+        <div class="card" style="border-left-color:#ffa502;">
+            <h3> Quản lý tồn kho</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>SKU</th>
+                        <th>Tên sản phẩm</th>
+                        <th>Tồn kho hiện tại</th>
+                    </tr>
+                </thead>
+                <tbody id="inventory-list">
+                    <tr><td colspan="3">Đang tải tồn kho...</td></tr>
+                </tbody>
+            </table>
+            <div class="control-row">
+                <input id="stockSku" placeholder="Nhập SKU (VD: LT001)" />
+                <select id="stockAction">
+                    <option value="increase">Tăng</option>
+                    <option value="decrease">Giảm</option>
+                </select>
+                <input id="stockQty" type="number" min="1" step="1" value="1" />
+                <button onclick="updateStock()">Cập nhật kho</button>
+            </div>
+            <div id="stockMsg" class="inline-msg"></div>
+        </div>
+
         <!-- Chi tiết User & Đơn hàng -->
         <div id="user-details" class="card" style="border-left-color: var(--accent);">
-            <h3 id="detail-title">📦 Thông tin chi tiết: </h3>
+            <h3 id="detail-title">Thông tin chi tiết: </h3>
             <div id="user-info-summary" style="margin-bottom: 20px; padding: 15px; background: #252545; border-radius: 8px;">
                 <!-- Thông tin Profile User -->
             </div>
@@ -119,28 +150,45 @@
     </div>
 
     <script>
+        function decodeJwtPayload(token) {
+            const parts = token.split('.');
+            if (parts.length < 2) throw new Error("Token khong hop le");
+
+            let payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+            while (payload.length % 4) payload += '=';
+
+            const json = decodeURIComponent(
+                Array.prototype.map.call(atob(payload), c =>
+                    '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)
+                ).join('')
+            );
+
+            return JSON.parse(json);
+        }
+
         window.onload = () => {
             // FIX LỖI: Lấy đúng key 'accessToken' thay vì 'admin_token'
             const token = localStorage.getItem('accessToken');
 
             if (!token) {
-                alert("🚨 Yêu cầu đăng nhập!");
+                alert("Yêu cầu đăng nhập!");
                 window.location.href = "/";
                 return;
             }
 
             try {
-                const payload = JSON.parse(atob(token.split('.')[1]));
+                const payload = decodeJwtPayload(token);
                 const roles = payload.realm_access ? payload.realm_access.roles : [];
 
                 if (!roles.includes('admin')) {
-                    alert("🚫 Truy cập bị từ chối! Bạn không có quyền Quản trị.");
+                    alert("Truy cập bị từ chối! Bạn không có quyền Quản trị.");
                     window.location.href = "/";
                     return;
                 }
 
                 document.getElementById('admin-name').innerText = payload.preferred_username || "Administrator";
                 fetchUsers();
+                fetchAdminProducts();
 
             } catch (e) {
                 console.error("Lỗi xác thực:", e);
@@ -153,7 +201,7 @@
             const token = localStorage.getItem('accessToken');
             try {
                 // ĐỔI SANG HTTPS 8443
-                const res = await fetch("https://localhost:8443/api/v1/admin/users", {
+                const res = await fetch("https://longle24520999.kesug.com/api/v1/admin/users", {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
 
@@ -183,11 +231,86 @@
             }
         }
 
+        function setStockMessage(message, type) {
+            const el = document.getElementById('stockMsg');
+            el.className = `inline-msg ${type}`;
+            el.innerText = message;
+            el.style.display = 'block';
+        }
+
+        async function fetchAdminProducts() {
+            const token = localStorage.getItem('accessToken');
+            const tbody = document.getElementById('inventory-list');
+            tbody.innerHTML = "<tr><td colspan='3'>Đang tải tồn kho...</td></tr>";
+            try {
+                const res = await fetch("https://longle24520999.kesug.com/api/v1/admin/products", {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const result = await res.json();
+                if (!res.ok) {
+                    tbody.innerHTML = "<tr><td colspan='3'>Không thể tải tồn kho.</td></tr>";
+                    setStockMessage(result.error || "Lỗi tải tồn kho", "err");
+                    return;
+                }
+                const items = result.data || [];
+                if (items.length === 0) {
+                    tbody.innerHTML = "<tr><td colspan='3'>Chưa có dữ liệu sản phẩm.</td></tr>";
+                    return;
+                }
+                tbody.innerHTML = items.map(p => `
+                    <tr>
+                        <td><strong>${p.sku}</strong></td>
+                        <td>${p.name}</td>
+                        <td style="color:${Number(p.stock) > 0 ? '#2ed573' : '#ff6b81'}; font-weight:bold;">${p.stock}</td>
+                    </tr>
+                `).join('');
+            } catch (err) {
+                tbody.innerHTML = "<tr><td colspan='3'>Lỗi kết nối.</td></tr>";
+                setStockMessage("Lỗi kết nối khi tải tồn kho", "err");
+            }
+        }
+
+        async function updateStock() {
+            const token = localStorage.getItem('accessToken');
+            const sku = document.getElementById('stockSku').value.trim().toUpperCase();
+            const action = document.getElementById('stockAction').value;
+            const quantity = Number(document.getElementById('stockQty').value);
+
+            if (!sku) {
+                setStockMessage("Vui lòng nhập SKU", "err");
+                return;
+            }
+            if (!Number.isInteger(quantity) || quantity <= 0) {
+                setStockMessage("Số lượng phải là số nguyên dương", "err");
+                return;
+            }
+
+            try {
+                const res = await fetch(`https://longle24520999.kesug.com/api/v1/admin/products/${sku}/stock`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ action, quantity })
+                });
+                const result = await res.json();
+                if (!res.ok) {
+                    setStockMessage(result.error || `Lỗi cập nhật kho (HTTP ${res.status})`, "err");
+                    return;
+                }
+                setStockMessage(`Đã ${action === 'increase' ? 'tăng' : 'giảm'} tồn kho cho ${sku} thành công.`, "ok");
+                fetchAdminProducts();
+            } catch (err) {
+                setStockMessage("Lỗi kết nối khi cập nhật kho", "err");
+            }
+        }
+
         async function viewUserDetails(userId, name, email) {
             // FIX LỖI
             const token = localStorage.getItem('accessToken');
             document.getElementById('user-details').style.display = 'block';
-            document.getElementById('detail-title').innerText = `📦 Chi tiết khách hàng: ${name}`;
+            document.getElementById('detail-title').innerText = ` Chi tiết khách hàng: ${name}`;
             
             document.getElementById('user-info-summary').innerHTML = `
                 <p>👤 <strong>Họ tên:</strong> ${name}</p>
@@ -197,7 +320,7 @@
 
             try {
                 // ĐỔI SANG HTTPS 8443
-                const res = await fetch(`https://localhost:8443/api/v1/admin/orders/${userId}`, {
+                const res = await fetch(`https://longle24520999.kesug.com/api/v1/admin/orders/${userId}`, {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
                 const orders = await res.json();
@@ -249,7 +372,7 @@
 
             try {
                 // ĐỔI SANG HTTPS 8443
-                const res = await fetch(`https://localhost:8443/api/v1/admin/orders/${orderId}/payment`, {
+                const res = await fetch(`https://longle24520999.kesug.com/api/v1/admin/orders/${orderId}/payment`, {
                     method: 'PATCH',
                     headers: { 
                         'Authorization': `Bearer ${token}`,

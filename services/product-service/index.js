@@ -3,6 +3,8 @@ const { Pool } = require('pg');
 const https = require('https');
 const fs = require('fs');
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
+const jwksClient = require('jwks-rsa');
 
 const app = express();
 // BẢO MẬT: Giới hạn dung lượng payload để chống DDoS tràn bộ nhớ
@@ -22,13 +24,12 @@ let internalHttpsAgent;
 
 // Agent chuyên dụng cho Vault
 const vaultHttpsAgent = new https.Agent({
-    ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt') ], 
-    checkServerIdentity: () => undefined 
+    ca: [ fs.readFileSync('./certs/ca-bundle.crt') ], 
 });
 
 // Agent chuyên dụng để bắn log sang ELK
 const logstashAgent = new https.Agent({
-    ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt') ],
+    ca: [ fs.readFileSync('./certs/ca-bundle.crt') ],
     rejectUnauthorized: true 
 });
 
@@ -46,8 +47,72 @@ async function sendLog(level, action, message, req = null) {
         ip_address: req ? (req.headers['x-forwarded-for'] || req.socket.remoteAddress) : "N/A"
     };
     try {
-        await axios.post('https://logstash:5044', logData, { httpsAgent: logstashAgent });
+        await axios.post('https://logstash:5044', logData, {
+            httpsAgent: logstashAgent,
+            timeout: 3000
+        });
     } catch (err) {}
+}
+
+const KEYCLOAK_BASE_URL = process.env.KEYCLOAK_BASE_URL || 'http://keycloak-idp:8080';
+const client = jwksClient({
+  jwksUri: `${KEYCLOAK_BASE_URL}/realms/laptop-store/protocol/openid-connect/certs`,
+  cache: true,
+  cacheMaxEntries: 5,
+  cacheMaxAge: 10 * 60 * 1000,
+  timeout: 5000
+});
+
+function getKey(header, callback) {
+  if (!header || !header.kid) {
+    return callback(new Error('Missing JWT kid'));
+  }
+
+  client.getSigningKey(header.kid, function(err, key) {
+    if (err) {
+      console.error('[JWT] Khong lay duoc signing key:', err.message, 'kid=', header.kid);
+      return callback(err);
+    }
+
+    if (!key) {
+      return callback(new Error('Signing key not found'));
+    }
+
+    const signingKey = key.getPublicKey ? key.getPublicKey() : (key.publicKey || key.rsaPublicKey);
+    if (!signingKey) {
+      return callback(new Error('Signing key has no public key material'));
+    }
+
+    callback(null, signingKey);
+  });
+}
+
+function verifyUserContext(req, res, next) {
+    const authHeader = req.headers['authorization'];
+    if (!authHeader) return res.status(401).json({ error: "Missing Token" });
+    const token = authHeader.split(' ')[1];
+    jwt.verify(token, getKey, { algorithms: ['ES256'] }, function(err, decoded) {
+        if (err) return res.status(401).json({ error: "Invalid or Expired Token" });
+        req.user = {
+            id: decoded.sub,
+            username: decoded.preferred_username || 'unknown',
+            roles: decoded.realm_access?.roles || []
+        };
+        next();
+    });
+}
+
+function hasRole(user, role) {
+    return Boolean(user && Array.isArray(user.roles) && user.roles.includes(role));
+}
+
+function requireRole(role) {
+    return function(req, res, next) {
+        if (!hasRole(req.user, role)) {
+            return res.status(403).json({ error: `Yeu cau quyen ${role}!` });
+        }
+        next();
+    };
 }
 
 // ==========================================
@@ -99,7 +164,7 @@ async function getVaultToken() {
         if (fs.existsSync(tokenPath)) {
             return fs.readFileSync(tokenPath, 'utf8').trim();
         }
-        console.log("⏳ Dang doi Vault Agent cap Token cho Product Service...");
+        console.log("Dang doi Vault Agent cap Token cho Product Service...");
         await new Promise(res => setTimeout(res, 1000));
     }
     throw new Error("Timeout: Khong nhan duoc Token tu Vault Agent!");
@@ -149,6 +214,65 @@ app.get('/api/v1/products/:sku', securityMonitor, async (req, res) => {
     } catch (err) {
         sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
         res.status(500).json({ error: "Lỗi hệ thống khi tra cứu SKU" });
+    }
+});
+
+// 2.1 API Admin xem tồn kho sản phẩm
+app.get('/api/v1/admin/products', verifyUserContext, requireRole('admin'), securityMonitor, async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT sku, name, stock FROM products ORDER BY name ASC');
+        res.status(200).json({
+            message: "Lấy danh sách tồn kho thành công",
+            total: rows.length,
+            data: rows
+        });
+    } catch (err) {
+        sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
+        res.status(500).json({ error: "Lỗi kết nối CSDL Sản phẩm" });
+    }
+});
+
+// 2.2 API Admin điều chỉnh tồn kho
+app.patch('/api/v1/admin/products/:sku/stock', verifyUserContext, requireRole('admin'), securityMonitor, async (req, res) => {
+    const { sku } = req.params;
+    const { action, quantity } = req.body;
+    const qty = Number(quantity);
+
+    if (!Number.isInteger(qty) || qty <= 0) {
+        return res.status(400).json({ error: "quantity phải là số nguyên dương" });
+    }
+    if (action !== 'increase' && action !== 'decrease') {
+        return res.status(400).json({ error: "action phải là increase hoặc decrease" });
+    }
+
+    try {
+        let query;
+        let params;
+
+        if (action === 'increase') {
+            query = 'UPDATE products SET stock = stock + $1 WHERE sku = $2 RETURNING sku, name, stock';
+            params = [qty, sku];
+        } else {
+            query = 'UPDATE products SET stock = stock - $1 WHERE sku = $2 AND stock >= $1 RETURNING sku, name, stock';
+            params = [qty, sku];
+        }
+
+        const { rows } = await pool.query(query, params);
+
+        if (rows.length === 0) {
+            if (action === 'decrease') {
+                return res.status(409).json({ error: "Không đủ tồn kho để giảm theo số lượng yêu cầu" });
+            }
+            return res.status(404).json({ error: `Không tìm thấy SKU: ${sku}` });
+        }
+
+        res.status(200).json({
+            message: `Cập nhật tồn kho thành công (${action})`,
+            data: rows[0]
+        });
+    } catch (err) {
+        sendLog("ERROR", "SYSTEM_ERROR", err.message, req);
+        res.status(500).json({ error: "Lỗi DB khi cập nhật tồn kho" });
     }
 });
 
@@ -204,11 +328,10 @@ async function bootstrap() {
         }
 
         // 3. Đứng chờ Vault Agent sinh file chứng chỉ ra ổ cứng
-        // CẬP NHẬT: Đổi thành product-bundle.json để đúng chuẩn Microservices độc lập
         const bundlePath = './certs/product-bundle.json'; 
         
         while (!fs.existsSync(bundlePath)) {
-            console.log("⏳ Đang chờ Vault Agent cấp chứng chỉ (product-bundle.json)...");
+            console.log("Đang chờ Vault Agent cấp chứng chỉ (product-bundle.json)...");
             await new Promise(res => setTimeout(res, 2000));
         }
 
@@ -222,7 +345,7 @@ async function bootstrap() {
         const options = {
             key: productKey,
             cert: productCert,
-            ca: [ fs.readFileSync('./certs/ca.crt'), fs.readFileSync('./certs/int-ca.crt') ],
+            ca: [ fs.readFileSync('./certs/ca-bundle.crt') ],
             requestCert: true,
             rejectUnauthorized: true
         };
@@ -241,7 +364,6 @@ async function bootstrap() {
         https.createServer(options, app).listen(PORT, '0.0.0.0', () => {
             console.log('============================================');
             console.log(`Product Service đã khởi động (Cổng ${PORT})`);
-            console.log('Đã tích hợp bảo mật mTLS & Giám sát SIEM.');
             console.log('============================================');
         });
 
